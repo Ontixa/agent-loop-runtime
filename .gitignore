@@ -7,8 +7,14 @@ dist/
 # Logs
 logs/*.log
 
-# Configuration (keep your secrets safe)
+# Runtime state — mission records, worktrees, logs (never commit)
+.agentloop/
+
+# Local configuration (agent paths/secrets — commit .example files instead)
 qwen-loop.config.json
+agentloop.config.json
+# NOTE: agentloop.policy.json is intentionally NOT ignored — it's the
+# reviewable safety contract for the repo.
 
 # Test artifacts
 src/test.ts

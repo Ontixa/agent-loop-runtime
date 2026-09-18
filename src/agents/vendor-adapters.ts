@@ -1,0 +1,129 @@
+import { CliAdapterBase, substituteArgs } from './cli-adapter-base.js';
+import type { AgentConfig, AgentInvocation, AgentInvocationContext } from '../types.js';
+
+/**
+ * Vendor CLI adapters.
+ *
+ * Each adapter knows how to build one bounded non-interactive invocation for
+ * its CLI. The default argv template can be replaced wholesale via
+ * `config.args` ({prompt} placeholder) or extended via `config.additionalArgs`.
+ *
+ * Autonomy flags (--yolo, --full-auto, --dangerously-skip-permissions, etc.)
+ * are required for headless operation — the runtime's policy, worktree
+ * isolation, validation gates and approval model provide the safety boundary,
+ * not the agent's own interactive prompts.
+ */
+
+function mergeArgs(defaults: string[], config: AgentConfig, ctx: AgentInvocationContext): string[] {
+  const base = config.args ? substituteArgs(config.args, ctx) : [...defaults];
+  if (config.additionalArgs?.length) base.push(...config.additionalArgs);
+  return base;
+}
+
+/** Qwen Code — original adapter, preserved behavior. */
+export class QwenAdapter extends CliAdapterBase {
+  readonly type = 'qwen';
+  readonly displayName = 'Qwen Code';
+  protected candidates(): string[] { return ['qwen']; }
+
+  buildInvocation(ctx: AgentInvocationContext, config: AgentConfig): AgentInvocation {
+    const args = config.args
+      ? mergeArgs([], config, ctx)
+      : mergeArgs([ctx.prompt, '--yolo', '-o', 'text'], config, ctx);
+    if (config.model) args.push('-m', config.model);
+    return { command: config.command ?? 'qwen', args };
+  }
+}
+
+/** OpenAI Codex CLI — `codex exec` non-interactive mode. */
+export class CodexAdapter extends CliAdapterBase {
+  readonly type = 'codex';
+  readonly displayName = 'Codex CLI';
+  protected candidates(): string[] { return ['codex']; }
+
+  buildInvocation(ctx: AgentInvocationContext, config: AgentConfig): AgentInvocation {
+    const args = config.args
+      ? mergeArgs([], config, ctx)
+      : mergeArgs(['exec', '--full-auto', '--skip-git-repo-check', ctx.prompt], config, ctx);
+    if (config.model) args.push('-m', config.model);
+    return { command: config.command ?? 'codex', args };
+  }
+}
+
+/** Anthropic Claude Code — print mode with permissions skipped. */
+export class ClaudeAdapter extends CliAdapterBase {
+  readonly type = 'claude';
+  readonly displayName = 'Claude Code';
+  protected candidates(): string[] { return ['claude']; }
+
+  buildInvocation(ctx: AgentInvocationContext, config: AgentConfig): AgentInvocation {
+    const args = config.args
+      ? mergeArgs([], config, ctx)
+      : mergeArgs(['-p', ctx.prompt, '--output-format', 'text', '--dangerously-skip-permissions'], config, ctx);
+    if (config.model) args.push('--model', config.model);
+    return { command: config.command ?? 'claude', args };
+  }
+}
+
+/**
+ * Devin CLI — interactive TUI by default; headless support is experimental.
+ * Invocation is best-effort: `devin "<prompt>"`. Marked experimental — use
+ * fixtures for contract tests.
+ */
+export class DevinAdapter extends CliAdapterBase {
+  readonly type = 'devin';
+  readonly displayName = 'Devin CLI';
+  protected candidates(): string[] { return ['devin']; }
+
+  buildInvocation(ctx: AgentInvocationContext, config: AgentConfig): AgentInvocation {
+    const args = config.args
+      ? mergeArgs([], config, ctx)
+      : mergeArgs([ctx.prompt], config, ctx);
+    return { command: config.command ?? 'devin', args };
+  }
+}
+
+/** Google Gemini CLI — positional prompt with --yolo auto-approve. */
+export class GeminiAdapter extends CliAdapterBase {
+  readonly type = 'gemini';
+  readonly displayName = 'Gemini CLI';
+  protected candidates(): string[] { return ['gemini']; }
+
+  buildInvocation(ctx: AgentInvocationContext, config: AgentConfig): AgentInvocation {
+    const args = config.args
+      ? mergeArgs([], config, ctx)
+      : mergeArgs([ctx.prompt, '--yolo'], config, ctx);
+    if (config.model) args.push('-m', config.model);
+    return { command: config.command ?? 'gemini', args };
+  }
+}
+
+/** OpenCode — `opencode run` non-interactive. */
+export class OpenCodeAdapter extends CliAdapterBase {
+  readonly type = 'opencode';
+  readonly displayName = 'OpenCode';
+  protected candidates(): string[] { return ['opencode']; }
+
+  buildInvocation(ctx: AgentInvocationContext, config: AgentConfig): AgentInvocation {
+    const args = config.args
+      ? mergeArgs([], config, ctx)
+      : mergeArgs(['run', ctx.prompt], config, ctx);
+    if (config.model) args.push('-m', config.model);
+    return { command: config.command ?? 'opencode', args };
+  }
+}
+
+/** Aider — message mode with auto-commits disabled (runtime owns commits). */
+export class AiderAdapter extends CliAdapterBase {
+  readonly type = 'aider';
+  readonly displayName = 'Aider';
+  protected candidates(): string[] { return ['aider']; }
+
+  buildInvocation(ctx: AgentInvocationContext, config: AgentConfig): AgentInvocation {
+    const args = config.args
+      ? mergeArgs([], config, ctx)
+      : mergeArgs(['--message', ctx.prompt, '--yes-always', '--no-auto-commits'], config, ctx);
+    if (config.model) args.push('--model', config.model);
+    return { command: config.command ?? 'aider', args };
+  }
+}

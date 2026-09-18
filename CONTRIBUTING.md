@@ -1,22 +1,21 @@
-# Contributing to Qwen Loop
+# Contributing to Agent Loop Runtime
 
 Thank you for your interest in contributing! Here's how you can help:
 
 ## 🐛 Reporting Bugs
 
-- Check the [Issues](https://github.com/tang-vu/Qwen-Loop/issues) page first
-- Use the bug report template
+- Check the [Issues](https://github.com/tang-vu/agent-loop-runtime/issues) page first
 - Include:
   - Node.js version (`node --version`)
-  - Qwen Code CLI version (`qwen --version`)
+  - Agent CLI + version (e.g. `qwen --version`, `codex --version`)
   - Steps to reproduce
-  - Logs from `logs/qwen-loop.log`
+  - Mission record + events from `.agentloop/missions/<id>/` (redact anything sensitive)
 
 ## ✨ Requesting Features
 
 - Open a feature request issue
 - Describe the use case and why it's valuable
-- Keep scope focused - one feature per issue
+- Keep scope focused — one feature per issue
 
 ## 🔧 Pull Requests
 
@@ -28,49 +27,45 @@ Thank you for your interest in contributing! Here's how you can help:
 
 ### Code Standards
 
-- **TypeScript strict mode** - no `any` unless absolutely necessary
-- **ESM imports** - use `.js` extension for local imports
-- **No console.log** - use the `logger` module instead
-- **Test your changes** - run `npx tsc --noEmit` before committing
+- **TypeScript strict mode** — no `any` unless absolutely necessary
+- **ESM imports** — use `.js` extension for local imports
+- **No console.log** — use the `logger` module instead
+- **No `shell: true`, no `exec`** — all processes go through `process-supervisor`
+- **No raw git strings** — all git ops through `git-runner` allowlist
+- See `docs/design-guidelines.md` for the safety invariants
 
 ### Commit Messages
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
-feat: add Claude agent support
+feat: add gemini adapter flag support
 fix: handle Windows spawn ENOENT error
 docs: update README with new config options
-chore: bump version to 1.1.0
 ```
 
 ### Before Submitting
 
 - [ ] `npx tsc --noEmit` passes with zero errors
-- [ ] Commit messages follow conventions
+- [ ] `npm run build` passes
+- [ ] `npx tsx --test src/__tests__/*.test.ts` is green
+- [ ] Tests added for behavior changes (fake agents — never vendor CLIs)
 - [ ] README/docs updated if behavior changed
-- [ ] No sensitive data (API keys, etc.) in code or commits
+- [ ] No sensitive data (API keys, tokens, machine paths) in code or commits
 
 ## 📖 Documentation
 
-Docs improvements are always welcome! Fix typos, add examples, clarify confusing sections.
+Docs live in `docs/` — see `docs/` for the required structure. Improvements welcome.
 
 ## 🚀 Development Workflow
 
 ```bash
-# Install deps
 npm install
-
-# Type check
-npx tsc --noEmit
-
-# Run in dev mode (auto-reload)
-npm run dev
-
-# Test the CLI
-npm start -- <command>
+npm run build                  # or: npx tsc --watch
+npx tsx src/cli.ts --help      # run the CLI from source
+npx tsx --test src/__tests__/  # test suite (fake agents, no vendor CLIs needed)
 ```
 
 ## Questions?
 
-Open a [Discussion](https://github.com/tang-vu/Qwen-Loop/discussions) or tag maintainers in issues/PRs.
+Open a [Discussion](https://github.com/tang-vu/agent-loop-runtime/discussions) or tag maintainers in issues/PRs.

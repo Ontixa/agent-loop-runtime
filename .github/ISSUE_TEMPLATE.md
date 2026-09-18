@@ -16,12 +16,12 @@ What you expected to happen.
 
 **Environment:**
 - Node.js version: (run `node --version`)
-- Qwen Code CLI version: (run `qwen --version`)
+- Agent CLI + version: (e.g. `qwen --version`, `codex --version`)
 - OS: (Windows/macOS/Linux)
-- Qwen Loop version: (check package.json)
+- Agent Loop Runtime version: (check package.json)
 
-**Logs**
-Attach relevant lines from `logs/qwen-loop.log`
+**Mission record**
+Attach `.agentloop/missions/<id>/mission.json` + relevant `events.jsonl` lines (redact anything sensitive)
 
 **Additional context**
 Add any other context about the problem here.

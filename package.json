@@ -1,9 +1,9 @@
 {
-  "name": "qwen-loop",
-  "version": "1.0.0",
+  "name": "agent-loop-runtime",
+  "version": "0.1.0",
   "main": "dist/index.js",
   "bin": {
-    "qwen-loop": "dist/cli.js"
+    "agentloop": "dist/cli.js"
   },
   "scripts": {
     "build": "npx tsc",
@@ -14,16 +14,29 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tang-vu/Qwen-Loop.git"
+    "url": "git+https://github.com/tang-vu/agent-loop-runtime.git"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "coding-agent",
+    "agent-runtime",
+    "mission",
+    "worktree",
+    "headless",
+    "qwen",
+    "codex",
+    "claude-code",
+    "devin",
+    "gemini-cli",
+    "opencode",
+    "aider"
+  ],
+  "author": "tang-vu",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/tang-vu/Qwen-Loop/issues"
+    "url": "https://github.com/tang-vu/agent-loop-runtime/issues"
   },
-  "homepage": "https://github.com/tang-vu/Qwen-Loop#readme",
-  "description": "",
+  "homepage": "https://github.com/tang-vu/agent-loop-runtime#readme",
+  "description": "Agent Loop Runtime — headless, safe, resumable execution engine for coding agents (Codex, Claude Code, Devin, Gemini CLI, Qwen Code, OpenCode, Aider, custom CLIs) under one mission, policy and recovery model.",
   "dependencies": {
     "@inquirer/prompts": "^8.3.2",
     "chalk": "^5.6.2",
