@@ -15,10 +15,12 @@ import type { AgentExitKind } from '../types.js';
  * - argv execution only — `shell: false` always, so no shell injection
  * - bounded in-memory output (ring tail), full output streamed to a size-
  *   limited log file instead of RAM
- * - timeouts enforced with process-tree kill (Windows taskkill /T, POSIX
- *   process-group kill)
+ * - timeouts enforced with process-tree kill (Windows: immediate
+ *   TerminateProcess on the child + taskkill /T tree sweep; POSIX: process-
+ *   group kill)
  * - cooperative cancellation via AbortSignal
  * - no zombie processes: 'close' awaited, stdio destroyed
+ * - runtime-internal env (AGENTLOOP_*) is stripped from the child
  */
 
 export interface SupervisedProcessOptions {
@@ -34,8 +36,10 @@ export interface SupervisedProcessOptions {
   /** Max bytes written to logFile before truncation note */
   maxLogBytes?: number;
   signal?: AbortSignal;
-  /** Grace period between SIGTERM and forced kill */
+  /** Grace period between SIGTERM and forced kill (POSIX) */
   killGraceMs?: number;
+  /** Called synchronously once the child is spawned — lets callers record the pid */
+  onSpawn?: (pid: number | undefined) => void;
 }
 
 export interface SupervisedResult {
@@ -53,13 +57,35 @@ const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024; // 64 KiB tail in memory
 const DEFAULT_MAX_LOG_BYTES = 16 * 1024 * 1024; // 16 MiB on disk
 const DEFAULT_KILL_GRACE_MS = 5000;
 
+/**
+ * Build the environment for a supervised child: caller env over a scrubbed
+ * process.env. Runtime-internal variables (AGENTLOOP_*) never leak into
+ * agent/gate processes — an agent must not see the operator's control token,
+ * approval key, or log path overrides. Vendor CLIs still receive their own
+ * credentials (e.g. ANTHROPIC_API_KEY) — those are the user's choice.
+ */
+export function childEnv(extra?: Record<string, string>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v === undefined) continue;
+    if (k.toUpperCase().startsWith('AGENTLOOP_')) continue;
+    env[k] = v;
+  }
+  for (const [k, v] of Object.entries(extra ?? {})) env[k] = v;
+  return env;
+}
+
 /** Kill a process and its whole tree. Never throws. */
 export async function killProcessTree(proc: ChildProcess, graceMs = 0): Promise<void> {
   const pid = proc.pid;
   if (!pid) return;
 
   if (process.platform === 'win32') {
-    // taskkill /T kills the whole tree; /F forces
+    // TerminateProcess on the direct child is immediate — do it first so the
+    // caller's 'close' event is not delayed by the tree sweep. taskkill /T
+    // then cleans up descendants asynchronously (it can be slow on some
+    // systems — that's fine, it only sweeps orphans).
+    try { proc.kill('SIGKILL'); } catch { /* already dead */ }
     await new Promise<void>((resolve) => {
       execFile('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true }, () => resolve());
     });
@@ -113,7 +139,7 @@ export function supervise(opts: SupervisedProcessOptions): Promise<SupervisedRes
     try {
       child = spawn(opts.command, opts.args, {
         cwd: opts.cwd,
-        env: opts.env ? { ...process.env, ...opts.env } : process.env,
+        env: childEnv(opts.env),
         shell: false, // hard rule: argv only, never a shell
         windowsHide: true,
         detached: process.platform !== 'win32' // process group for POSIX kill
@@ -129,6 +155,8 @@ export function supervise(opts: SupervisedProcessOptions): Promise<SupervisedRes
       });
       return;
     }
+
+    try { opts.onSpawn?.(child.pid); } catch { /* recording hook must not break spawn */ }
 
     // ── bounded output capture ──────────────────────────────────────────
     let tail = '';

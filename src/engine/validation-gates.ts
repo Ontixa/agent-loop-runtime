@@ -1,7 +1,8 @@
 import { supervise } from '../supervisor/process-supervisor.js';
 import { toSpawnInvocation } from '../agents/cli-adapter-base.js';
 import { classifyCommand } from '../policy/command-safety.js';
-import type { GateResult, Policy } from '../types.js';
+import { approvalCoversArgv, policyHash as computePolicyHash } from '../policy/approvals.js';
+import type { ApprovalRequest, GateResult, Policy } from '../types.js';
 import { boundTail } from '../util/redact.js';
 import { logger } from '../logger.js';
 
@@ -33,16 +34,21 @@ export async function runValidationGates(
   gates: ValidationGate[],
   cwd: string,
   policy: Policy,
-  opts: { stopOnFirstFailure?: boolean; approvedArgv?: string[][] } = {}
+  opts: { stopOnFirstFailure?: boolean; approved?: ApprovalRequest[] } = {}
 ): Promise<{ results: GateResult[]; allPassed: boolean; needsApproval: GateResult[] }> {
   const results: GateResult[] = [];
   const needsApproval: GateResult[] = [];
+  const currentPolicyHash = computePolicyHash(policy);
 
-  // Commands a human already approved for this mission run as allowed —
-  // approval is sticky for the mission, never re-requested.
+  // Commands a human already approved for this mission run as allowed.
+  // Binding rules: the approval must (a) be decided 'approved', (b) carry the
+  // EXACT same argv — approving ["node","-e"] does not bless every `node -e`,
+  // and (c) be bound to the same policy fingerprint — a policy change or a
+  // different gated scope invalidates the earlier approval.
   const isApproved = (argv: string[]) =>
-    (opts.approvedArgv ?? []).some(ap =>
-      ap.length <= argv.length && ap.every((a, i) => a === argv[i]));
+    (opts.approved ?? []).some(ap =>
+      approvalCoversArgv(ap, argv) &&
+      (ap.policyHash === undefined || ap.policyHash === currentPolicyHash));
 
   for (const gate of gates) {
     const verdict = isApproved(gate.argv)
