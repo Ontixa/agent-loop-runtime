@@ -67,7 +67,7 @@ describe('crash recovery', () => {
     store.transition(m2, MissionState.RUNNING, 'go');
     // Attach a runner record with a definitely-dead pid and old heartbeat
     const m3 = store.mustLoad(m.id);
-    m3.runner = { pid: 999999, heartbeatAt: new Date(Date.now() - 120000).toISOString(), startedAt: new Date().toISOString() };
+    m3.runner = { pid: 999999, nonce: 'deadbeef', heartbeatAt: new Date(Date.now() - 120000).toISOString(), startedAt: new Date().toISOString() };
     store.save(m3);
 
     const stale = await detectStaleMissions(store);
@@ -82,7 +82,7 @@ describe('crash recovery', () => {
     const m2 = store.mustLoad(m.id);
     store.transition(m2, MissionState.RUNNING, 'go');
     const m3 = store.mustLoad(m.id);
-    m3.runner = { pid: process.pid, heartbeatAt: new Date(Date.now() - 120000).toISOString(), startedAt: new Date().toISOString() };
+    m3.runner = { pid: process.pid, nonce: 'self', heartbeatAt: new Date(Date.now() - 120000).toISOString(), startedAt: new Date().toISOString() };
     store.save(m3);
 
     const stale = await detectStaleMissions(store);
@@ -105,7 +105,7 @@ describe('crash recovery', () => {
     loaded = store.mustLoad(m.id);
     store.transition(loaded, MissionState.RUNNING, 'go');
     loaded = store.mustLoad(m.id);
-    loaded.runner = { pid: 999999, heartbeatAt: new Date(Date.now() - 120000).toISOString(), startedAt: new Date().toISOString() };
+    loaded.runner = { pid: 999999, nonce: 'deadbeef', heartbeatAt: new Date(Date.now() - 120000).toISOString(), startedAt: new Date().toISOString() };
     loaded.workspace.mode = 'in-place';
     loaded.workspace.path = dir;
     store.save(loaded);

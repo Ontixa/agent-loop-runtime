@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, readdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { MissionStore, missionDir } from '../mission/mission-store.js';
+import { MissionStore, missionDir, CorruptStateError } from '../mission/mission-store.js';
 import { createMission } from '../engine/mission-factory.js';
 import { MissionState, AgentType } from '../types.js';
 import type { MissionSpec, AgentConfig } from '../types.js';
@@ -114,9 +114,16 @@ describe('atomic persistence', () => {
     assert.ok(!files.some(f => f.endsWith('.tmp')), 'no temp files left');
   });
 
-  test('corrupt mission.json fails read safely (returns null)', () => {
+  test('corrupt mission.json is loud and preserved — never read as missing', () => {
     const m = makeMission();
-    writeFileSync(join(missionDir(dir, m.id), 'mission.json'), '{corrupt', 'utf8');
-    assert.equal(store.load(m.id), null);
+    const mdir = missionDir(dir, m.id);
+    writeFileSync(join(mdir, 'mission.json'), '{corrupt', 'utf8');
+    assert.throws(() => store.load(m.id), CorruptStateError);
+    // Raw bytes are preserved for diagnosis — not quarantined or blanked
+    assert.equal(readFileSync(join(mdir, 'mission.json'), 'utf8'), '{corrupt');
+    // And it is surfaced via listCorrupt() rather than silently dropped
+    const corrupt = store.listCorrupt();
+    assert.ok(corrupt.some(e => e.id === m.id), 'corrupt mission must appear in listCorrupt()');
+    assert.ok(!store.list().some(e => e.id === m.id), 'corrupt mission is not a loadable record');
   });
 });

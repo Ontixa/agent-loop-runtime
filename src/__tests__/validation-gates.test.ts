@@ -2,12 +2,29 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runValidationGates, resolveGates } from '../engine/validation-gates.js';
 import { resolvePolicy } from '../policy/policy.js';
+import type { ApprovalRequest } from '../types.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execPath } from 'node:process';
 
 const NODE = execPath;
+
+/** Build a decided approval bound to exactly `argv` and the given policy. */
+function approvedFor(argv: string[], policy: ReturnType<typeof resolvePolicy>): ApprovalRequest {
+  // policyHash must match what the gates compute — reuse the same helper
+  // indirectly by leaving it undefined (undefined binds to any policy).
+  return {
+    id: `ap_test_${Math.random().toString(16).slice(2, 8)}`,
+    gate: 'dangerous-command',
+    detail: 'test approval',
+    commands: [argv],
+    status: 'approved',
+    requestedAt: new Date().toISOString(),
+    decidedAt: new Date().toISOString(),
+    decidedBy: 'test-operator'
+  };
+}
 
 function tmp(): string {
   return mkdtempSync(join(tmpdir(), 'alr-gates-'));
@@ -45,9 +62,10 @@ test('approved command executes on re-validation instead of re-asking', async ()
   const first = await runValidationGates([gate], cwd, lockedPolicy());
   assert.equal(first.needsApproval.length, 1);
 
-  // Operator approves → sticky approval passed back in → gate RUNS
-  const second = await runValidationGates([gate], cwd, lockedPolicy(), {
-    approvedArgv: [argv]
+  // Operator approves → bound approval passed back in → gate RUNS
+  const p = lockedPolicy();
+  const second = await runValidationGates([gate], cwd, p, {
+    approved: [approvedFor(argv, p)]
   });
   assert.equal(second.needsApproval.length, 0);
   assert.equal(second.allPassed, true);
@@ -55,23 +73,26 @@ test('approved command executes on re-validation instead of re-asking', async ()
   assert.equal(existsSync(join(cwd, 'ran.txt')), true);
 });
 
-test('approvedArgv prefix matches longer argv (same command, extra args)', async () => {
+test('an approval for a PREFIX does not cover longer argv (scope creep is not inherited)', async () => {
   const cwd = tmp();
   const approved = [NODE, '-e'];
+  const p = lockedPolicy();
   const gate = { name: 'check', argv: [NODE, '-e', 'process.exit(0)'] };
   const { allPassed, needsApproval } = await runValidationGates(
-    [gate], cwd, lockedPolicy(), { approvedArgv: [approved] }
+    [gate], cwd, p, { approved: [approvedFor(approved, p)] }
   );
-  assert.equal(needsApproval.length, 0);
-  assert.equal(allPassed, true);
+  // Exact-match binding: approving `node -e` must NOT bless every `node -e ...`
+  assert.equal(needsApproval.length, 1);
+  assert.equal(allPassed, false);
 });
 
 test('different command is NOT covered by an unrelated approval', async () => {
   const cwd = tmp();
+  const p = lockedPolicy();
   const gate = { name: 'check', argv: [NODE, '-e', 'process.exit(0)'] };
   const { needsApproval } = await runValidationGates(
-    [gate], cwd, lockedPolicy(),
-    { approvedArgv: [[NODE, '--version']] }
+    [gate], cwd, p,
+    { approved: [approvedFor([NODE, '--version'], p)] }
   );
   assert.equal(needsApproval.length, 1);
 });
