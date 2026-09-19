@@ -16,7 +16,9 @@ import { MissionState, TERMINAL_MISSION_STATES } from '../types.js';
 
 const TRANSITIONS: ReadonlyMap<MissionState, ReadonlySet<MissionState>> = new Map([
   [MissionState.CREATED, new Set([MissionState.PREPARED, MissionState.CANCELLED, MissionState.FAILED])],
-  [MissionState.PREPARED, new Set([MissionState.RUNNING, MissionState.CANCELLED, MissionState.FAILED, MissionState.STALE])],
+  [MissionState.PREPARED, new Set([
+    MissionState.RUNNING, MissionState.PAUSED, MissionState.CANCELLED, MissionState.FAILED, MissionState.STALE
+  ])],
   [MissionState.RUNNING, new Set([
     MissionState.PAUSED, MissionState.VALIDATING, MissionState.WAITING_FOR_APPROVAL,
     MissionState.BLOCKED, MissionState.FAILED, MissionState.CANCELLED, MissionState.STALE
@@ -27,15 +29,18 @@ const TRANSITIONS: ReadonlyMap<MissionState, ReadonlySet<MissionState>> = new Ma
   [MissionState.WAITING_FOR_APPROVAL, new Set([
     MissionState.RUNNING, MissionState.REPAIRING, MissionState.VALIDATING,
     MissionState.BLOCKED, MissionState.CANCELLED, MissionState.FAILED, MissionState.STALE,
+    // pausing while waiting stops the poll loop; resume re-reads the ledger
+    MissionState.PAUSED,
     // recovery re-prepares: re-driving the step re-reads the persisted decision
     MissionState.PREPARED
   ])],
   [MissionState.VALIDATING, new Set([
     MissionState.COMPLETED, MissionState.REPAIRING, MissionState.WAITING_FOR_APPROVAL,
-    MissionState.BLOCKED, MissionState.FAILED, MissionState.CANCELLED, MissionState.STALE
+    MissionState.PAUSED, MissionState.BLOCKED, MissionState.FAILED, MissionState.CANCELLED,
+    MissionState.STALE
   ])],
   [MissionState.REPAIRING, new Set([
-    MissionState.VALIDATING, MissionState.WAITING_FOR_APPROVAL,
+    MissionState.VALIDATING, MissionState.WAITING_FOR_APPROVAL, MissionState.PAUSED,
     MissionState.BLOCKED, MissionState.FAILED, MissionState.CANCELLED, MissionState.STALE
   ])],
   [MissionState.BLOCKED, new Set([MissionState.PREPARED, MissionState.CANCELLED, MissionState.FAILED])],

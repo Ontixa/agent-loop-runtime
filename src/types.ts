@@ -167,9 +167,22 @@ export interface MissionBudget {
 
 /** Runtime bookkeeping (no secrets) */
 export interface MissionUsage {
+  /**
+   * Agent process invocations ATTEMPTED — incremented before spawn, so a
+   * crash mid-invocation still consumes budget. Never resets across resume.
+   */
   agentInvocations: number;
   repairPasses: number;
+  /**
+   * Wall-clock time since first start (includes time spent waiting on human
+   * approval). The mission deadline is measured against this.
+   */
   wallTimeMs: number;
+  /**
+   * Portion of wallTimeMs spent in waiting_for_approval. Reported separately
+   * so operators can see agent runtime vs human wait time.
+   */
+  approvalWaitMs?: number;
   startedAt?: string;
 }
 
@@ -188,6 +201,12 @@ export interface TaskNode {
   outputSummary?: string;
   startedAt?: string;
   completedAt?: string;
+  /**
+   * Set when the runner was lost (or paused) mid-invocation before the task
+   * outcome was recorded. The result is UNKNOWN — status returns to `pending`
+   * and the workspace is validated before any retry. Never silently retried.
+   */
+  interrupted?: boolean;
 }
 
 /** Result of one validation gate execution */
@@ -215,7 +234,12 @@ export interface ReviewResult {
 export interface MissionPass {
   n: number;
   kind: 'execute' | 'repair';
+  /** Unique id of the agent attempt, recorded BEFORE spawn */
   agentInvocationId?: string;
+  /** What the attempt set out to do — recorded before spawn */
+  intent?: { taskId?: string; kind: 'execute' | 'repair' };
+  /** Pid of the spawned agent process (used for orphan detection on recovery) */
+  agentPid?: number;
   startedAt: string;
   finishedAt?: string;
   gates?: GateResult[];
@@ -223,6 +247,11 @@ export interface MissionPass {
   checkpointSha?: string;
   /** Agent-reported outcome classification */
   agentExit?: 'success' | 'failed' | 'timeout' | 'cancelled' | 'spawn-error';
+  /**
+   * Runner was lost before the outcome was persisted — the attempt's real
+   * result is UNKNOWN. Recovery inspects the workspace before deciding.
+   */
+  interrupted?: boolean;
   note?: string;
 }
 
@@ -240,12 +269,25 @@ export interface ApprovalRequest {
     | 'policy-change'
     | 'in-place-execution';
   detail: string;
-  /** For command gates: the argv(s) that were gated. Approved commands are sticky for the mission. */
+  /**
+   * For command gates: the exact argv(s) that were gated. An approval covers
+   * only these exact argv values — a changed command or scope invalidates it.
+   */
   commands?: string[][];
+  /** Fingerprint of the mission's resolved policy at request time */
+  policyHash?: string;
+  /** Workspace the gated action targets */
+  worktree?: string;
   status: 'pending' | 'approved' | 'denied';
   requestedAt: string;
   decidedAt?: string;
   decidedBy?: string;
+  /**
+   * HMAC-SHA256 of `id|decision|decidedBy|decidedAt` under the operator key
+   * (env AGENTLOOP_APPROVAL_KEY). Present only when the key is configured;
+   * unsigned approvals are advisory (see threat model).
+   */
+  sig?: string;
 }
 
 /** A Git-native checkpoint */
@@ -258,11 +300,18 @@ export interface Checkpoint {
   diffSummary?: string;
 }
 
-/** Runner identity used for crash/stale detection */
+/** Runner identity used for crash/stale detection and ownership */
 export interface MissionRunnerInfo {
   pid: number;
+  /**
+   * Random per-runner-instance nonce — the ownership token. A pid alone is
+   * not identity (reuse across restarts); the nonce distinguishes runners.
+   */
+  nonce: string;
   startedAt: string;
   heartbeatAt: string;
+  /** Monotonic heartbeat counter — increments every beat */
+  hbSeq?: number;
   /** Hostname + platform, for diagnostics */
   host?: string;
 }
@@ -271,6 +320,14 @@ export interface MissionRunnerInfo {
 export interface Mission {
   schemaVersion: 1;
   id: string;
+  /**
+   * Optimistic-concurrency counter, managed by MissionStore. Every save under
+   * the mission lock increments it; a writer holding a stale copy fails the
+   * compare-and-swap instead of silently clobbering newer state.
+   */
+  revision?: number;
+  /** Fingerprint of the resolved policy snapshot (approval binding) */
+  policyHash?: string;
   /** Mission kind: objective (default), maintenance, or legacy continuous */
   kind: 'objective' | 'maintenance' | 'continuous';
   spec: MissionSpec;
@@ -280,7 +337,7 @@ export interface Mission {
   policy: ResolvedPolicy;
   budget: MissionBudget;
   state: MissionState;
-  stateHistory: Array<{ state: MissionState; at: string; reason?: string }>;
+  stateHistory: Array<{ state: MissionState; at: string; reason?: string; opId?: string }>;
   tasks: TaskNode[];
   passes: MissionPass[];
   approvals: ApprovalRequest[];
@@ -288,6 +345,20 @@ export interface Mission {
   usage: MissionUsage;
   runner?: MissionRunnerInfo;
   outcome?: MissionOutcome;
+  /**
+   * Most recent crash-recovery audit: what was found in-flight, what was
+   * marked unknown, whether uncommitted work may have been lost.
+   */
+  lastRecovery?: {
+    at: string;
+    from: MissionState;
+    interruptedTasks: string[];
+    interruptedPasses: number[];
+    orphanedPids: number[];
+    worktreeRecreated: boolean;
+    /** Worktree missing while uncommitted work may have existed */
+    lostWorkSuspected: boolean;
+  };
   createdAt: string;
   updatedAt: string;
 }
@@ -451,9 +522,19 @@ export type RuntimeEventType =
   | 'mission_failed'
   | 'mission_cancelled'
   | 'mission_blocked'
-  | 'runner_heartbeat';
+  | 'mission_stale'
+  | 'runner_heartbeat'
+  | 'runner_claimed'
+  | 'lease_lost'
+  | 'recovery_audit'
+  | 'orphan_process_killed'
+  | 'approval_unverified'
+  | 'work_interrupted';
 
 export interface RuntimeEvent {
+  /** Unique event id — lets consumers detect duplicate records on re-read */
+  id?: string;
+  /** Per-mission monotonically increasing sequence (gaps possible on failure) */
   seq?: number;
   type: RuntimeEventType;
   at: string;
@@ -492,6 +573,8 @@ export interface RuntimeConfig {
     host?: string;
     port?: number;
     token?: string;
+    /** Explicit CORS origins allowed to call the API from a browser. Default: none. */
+    corsOrigins?: string[];
   };
 }
 
