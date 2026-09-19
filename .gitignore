@@ -7,13 +7,13 @@ dist/
 # Logs
 logs/*.log
 
-# Runtime state — mission records, worktrees, logs (never commit)
+# Runtime state â€” mission records, worktrees, logs (never commit)
 .agentloop/
 
-# Local configuration (agent paths/secrets — commit .example files instead)
+# Local configuration (agent paths/secrets â€” commit .example files instead)
 qwen-loop.config.json
 agentloop.config.json
-# NOTE: agentloop.policy.json is intentionally NOT ignored — it's the
+# NOTE: agentloop.policy.json is intentionally NOT ignored â€” it's the
 # reviewable safety contract for the repo.
 
 # Test artifacts
@@ -37,3 +37,9 @@ Thumbs.db
 
 # TypeScript
 *.tsbuildinfo
+
+# AI assistant artifacts
+.devin/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+NUL
