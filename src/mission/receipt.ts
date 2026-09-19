@@ -22,6 +22,10 @@ export interface MissionReceipt {
     objective: string;
     spec: Mission['spec'];
     state: Mission['state'];
+    /** CAS revision at receipt time — which record generation this describes */
+    revision?: number;
+    /** Resolved-policy fingerprint the mission ran under */
+    policyHash?: string;
     createdAt: string;
     completedAt?: string;
   };
@@ -44,11 +48,17 @@ export interface MissionReceipt {
     status: string;
     dependsOn: string[];
     pass?: number;
+    /** True when a runner was lost mid-attempt — the recorded outcome is unknown */
+    interrupted?: boolean;
+    result?: string;
   }>;
   passes: Array<{
     n: number;
     kind: string;
+    agentInvocationId?: string;
+    intent?: { taskId?: string; kind: 'execute' | 'repair' };
     agentExit?: string;
+    interrupted?: boolean;
     gates?: GateResult[];
     review?: ReviewResult;
     checkpointSha?: string;
@@ -62,6 +72,8 @@ export interface MissionReceipt {
     decidedAt?: string;
   }>;
   usage: Mission['usage'];
+  /** Most recent crash-recovery audit, if any */
+  lastRecovery?: Mission['lastRecovery'];
   outcome?: Mission['outcome'];
   eventsHash?: string;
 }
@@ -78,6 +90,8 @@ export function buildReceipt(mission: Mission): MissionReceipt {
       objective: mission.spec.objective,
       spec: mission.spec,
       state: mission.state,
+      revision: mission.revision,
+      policyHash: mission.policyHash,
       createdAt: mission.createdAt,
       completedAt: mission.outcome?.at
     },
@@ -99,12 +113,17 @@ export function buildReceipt(mission: Mission): MissionReceipt {
       title: t.title,
       status: t.status,
       dependsOn: t.dependsOn,
-      pass: t.pass
+      pass: t.pass,
+      interrupted: t.interrupted || undefined,
+      result: t.result
     })),
     passes: mission.passes.map(p => ({
       n: p.n,
       kind: p.kind,
+      agentInvocationId: p.agentInvocationId,
+      intent: p.intent,
       agentExit: p.agentExit,
+      interrupted: p.interrupted || undefined,
       gates: p.gates,
       review: p.review,
       checkpointSha: p.checkpointSha
@@ -118,6 +137,7 @@ export function buildReceipt(mission: Mission): MissionReceipt {
       decidedAt: a.decidedAt
     })),
     usage: mission.usage,
+    lastRecovery: mission.lastRecovery,
     outcome: mission.outcome
   };
 }

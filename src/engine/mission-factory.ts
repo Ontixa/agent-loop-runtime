@@ -3,6 +3,7 @@ import { MissionStore, missionId } from '../mission/mission-store.js';
 import { inspectRepo, preflightRepo } from '../git/repo-inspector.js';
 import { createMissionWorktree, ensureRuntimeDir } from '../git/worktree-manager.js';
 import { loadPolicy } from '../policy/policy.js';
+import { policyHash as computePolicyHash } from '../policy/approvals.js';
 import type {
   Mission, MissionSpec, AgentConfig, MissionBudget, Policy
 } from '../types.js';
@@ -46,6 +47,15 @@ export function createMission(opts: CreateMissionOptions, store: MissionStore): 
   const repoPath = resolve(opts.repoPath);
   const policy = opts.policy ?? loadPolicy(repoPath).policy;
 
+  // In-place execution touches the operator's real checkout — the two-flag
+  // contract is enforced HERE, not just at the CLI surface, so API/MCP
+  // callers can't bypass it either.
+  if (opts.workspaceMode === 'in-place' && opts.inPlaceApproved !== true) {
+    throw new Error(
+      'In-place mission requires explicit operator sign-off: pass both --in-place and --in-place-approved'
+    );
+  }
+
   const budget: MissionBudget = {
     maxMissionMinutes: opts.budget?.maxMissionMinutes ?? policy.maxMissionMinutes,
     maxRepairPasses: opts.budget?.maxRepairPasses ?? policy.maxRepairPasses,
@@ -64,6 +74,10 @@ export function createMission(opts: CreateMissionOptions, store: MissionStore): 
   const mission: Mission = {
     schemaVersion: 1,
     id,
+    // Snapshot the resolved policy fingerprint — approvals bind to it, so a
+    // policy edit mid-mission invalidates earlier approvals rather than
+    // silently covering new scope.
+    policyHash: computePolicyHash(policy),
     kind: opts.kind ?? 'objective',
     spec: {
       ...opts.spec,
@@ -128,23 +142,31 @@ export async function prepareMission(
     );
   }
 
-  mission.repository.baseSha = status.headSha!;
-  mission.repository.baseBranch = status.branch ?? 'HEAD';
-  mission.repository.remote = status.remote;
+  const baseSha = status.headSha!;
+  const baseBranch = status.branch ?? 'HEAD';
+  const remote = status.remote;
 
+  let worktreePath2 = repoPath;
+  let worktreeBranch = baseBranch;
   if (mission.workspace.mode === 'worktree') {
-    const wt = await createMissionWorktree(repoPath, mission.id, status.headSha!);
-    mission.workspace.path = wt.path;
-    mission.workspace.branch = wt.branch;
+    const wt = await createMissionWorktree(repoPath, mission.id, baseSha);
+    worktreePath2 = wt.path;
+    worktreeBranch = wt.branch;
   } else {
     ensureRuntimeDir(repoPath);
-    mission.workspace.path = repoPath;
-    mission.workspace.branch = status.branch;
   }
 
-  if (opts.plannerTasks) {
-    mission.tasks = opts.plannerTasks;
-  }
+  // All persisted writes go through mutate() — the store owns disk truth and
+  // this mutation lands atomically under the mission lock.
+  const updated = store.mutate(mission.id, fresh => {
+    fresh.repository.baseSha = baseSha;
+    fresh.repository.baseBranch = baseBranch;
+    fresh.repository.remote = remote;
+    fresh.workspace.path = worktreePath2;
+    fresh.workspace.branch = worktreeBranch;
+    if (opts.plannerTasks) fresh.tasks = opts.plannerTasks;
+  });
+  Object.assign(mission, updated);
 
   store.transition(mission, MissionState.PREPARED, 'preflight ok, workspace ready');
   store.emit(mission.id, 'mission_prepared', {

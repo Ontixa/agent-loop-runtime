@@ -79,13 +79,17 @@ export class MissionScheduler extends EventEmitter {
     this.pump();
   }
 
-  /** Graceful stop: stop dequeuing, request pause on running missions. */
+  /**
+   * Graceful stop: stop dequeuing, request pause on running missions.
+   * The pause is recorded with reason 'shutdown' — recover() auto-resumes
+   * shutdown-paused missions but NEVER operator-paused ones.
+   */
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.pumpTimer) { clearTimeout(this.pumpTimer); this.pumpTimer = null; }
     const stops: Promise<unknown>[] = [];
     for (const entry of this.running.values()) {
-      entry.runner.requestPause();
+      entry.runner.requestPause('shutdown');
       stops.push(entry.promise.catch(() => undefined));
     }
     await Promise.allSettled(stops);
@@ -137,10 +141,21 @@ export class MissionScheduler extends EventEmitter {
           });
         }
       }
-      // Also requeue missions left in resumable states (e.g. paused on shutdown)
+      // Requeue missions left in resumable states. An OPERATOR pause is
+      // never auto-resumed — only a pause recorded as 'shutdown ...' (daemon
+      // stopping mid-flight) is picked up again. PREPARED and
+      // WAITING_FOR_APPROVAL are safe to re-drive (the runner re-reads the
+      // persisted approval ledger before acting on it).
       for (const m of store.listActive()) {
-        if (m.state === MissionState.PAUSED || m.state === MissionState.PREPARED) {
+        if (m.state === MissionState.PREPARED || m.state === MissionState.WAITING_FOR_APPROVAL) {
           this.enqueue(repoRoot, m.id);
+          continue;
+        }
+        if (m.state === MissionState.PAUSED) {
+          const lastPause = [...m.stateHistory].reverse().find(h => h.state === MissionState.PAUSED);
+          if (lastPause?.reason?.startsWith('shutdown')) {
+            this.enqueue(repoRoot, m.id);
+          }
         }
       }
     }
