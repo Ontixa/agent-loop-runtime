@@ -32,6 +32,8 @@ export interface RepoHealth {
     byState: Record<string, number>;
     stale: number;
     blockedApprovals: number;
+    /** mission.json files that failed to parse — preserved, need inspection */
+    corrupt: number;
   };
   worktrees: { active: number; paths: string[] };
   throughput: { completedLast24h: number; failedLast24h: number };
@@ -83,15 +85,17 @@ export async function collectHealth(opts: HealthOptions): Promise<HealthReport> 
       .map(m => m.workspace.path)
       .filter(p => existsSync(p));
 
+    const corrupt = store.listCorrupt();
     if (stale > 0) warnings.push(`${repo}: ${stale} stale mission(s) need recovery`);
     if (blockedApprovals > 0) warnings.push(`${repo}: ${blockedApprovals} pending approval(s)`);
+    if (corrupt.length > 0) errors.push(`${repo}: ${corrupt.length} corrupt mission record(s) — inspect .agentloop/missions/`);
 
     repos.push({
       path: repo,
       git: git.isRepo
         ? { ok: true, branch: git.branch, dirty: git.dirty, detached: git.detached }
         : { ok: false, error: 'not a git repository' },
-      missions: { total: missions.length, byState, stale, blockedApprovals },
+      missions: { total: missions.length, byState, stale, blockedApprovals, corrupt: corrupt.length },
       worktrees: { active: worktreePaths.length, paths: worktreePaths },
       throughput: { completedLast24h: completed24, failedLast24h: failed24 }
     });

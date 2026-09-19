@@ -2,8 +2,7 @@ import { mkdirSync } from 'fs';
 import { join } from 'path';
 import { MissionStore } from '../mission/mission-store.js';
 import { MissionScheduler } from '../engine/scheduler.js';
-import { recoverMission } from '../engine/recovery.js';
-import { MissionState } from '../types.js';
+import { detectStaleMissions } from '../engine/recovery.js';
 import type { Policy, RuntimeConfig } from '../types.js';
 import { loadPolicy } from '../policy/policy.js';
 import { writeJsonAtomic } from '../util/atomic-file.js';
@@ -41,6 +40,7 @@ export class Daemon {
       host: cfg.host ?? '127.0.0.1',
       port: cfg.port ?? 3210,
       token: cfg.token ?? process.env.AGENTLOOP_API_TOKEN,
+      corsOrigins: cfg.corsOrigins,
       repos: this.stores,
       scheduler: opts.scheduler,
       version: opts.version,
@@ -63,13 +63,17 @@ export class Daemon {
       logger.info(`Recovered ${recovered.length} interrupted mission(s)`, { missions: recovered });
     }
 
-    // PID/status file so `agentloop status` can find a running daemon
+    // PID/status file so `agentloop status` can find a running daemon.
+    // The bearer token is stored here so operator tooling (same UID) can
+    // authenticate. This is NOT a boundary against agent processes running
+    // as the same OS user — see docs/threat-model.md.
     const dir = join(process.env.AGENTLOOP_HOME ?? join(process.cwd(), '.agentloop'));
     mkdirSync(dir, { recursive: true });
     writeJsonAtomic(join(dir, 'daemon.json'), {
       pid: process.pid,
       startedAt: new Date(this.startedAt).toISOString(),
-      url: `http://127.0.0.1:${this.opts.config?.port ?? 3210}`,
+      url: this.api.url,
+      token: this.api.bearerToken,
       repos: this.opts.repos
     });
 
@@ -88,17 +92,20 @@ export class Daemon {
     logger.info(`Daemon started, serving ${this.opts.repos.length} repo(s)`);
   }
 
-  /** Mark heartbeats that have gone silent as stale; do not kill missions. */
+  /**
+   * Mark heartbeats that have gone silent as stale; do not kill missions.
+   * Covers every active state (running/validating/repairing/waiting), not
+   * just 'running' — a runner can die mid-validation too. Missions this
+   * daemon's scheduler owns are skipped (same pid).
+   */
   private async sweepStale(): Promise<void> {
     if (this.stopping) return;
     for (const { store } of this.stores.values()) {
-      for (const m of store.list()) {
-        if (m.state === MissionState.RUNNING && m.runner &&
-            !this.opts.scheduler.status().running.includes(m.id)) {
-          // A mission marked running with no live runner → stale, recoverable
-          await recoverMission(store, m.id).catch(err =>
-            logger.warn('stale sweep recovery failed', { mission: m.id, error: String(err) }));
-        }
+      const stale = await detectStaleMissions(store);
+      for (const m of stale) {
+        // Mark only — recovery (and requeue) is a deliberate operator action
+        // via resume; an unattended daemon must not auto-re-drive missions.
+        logger.warn('Mission marked stale — needs explicit resume', { mission: m.id });
       }
     }
   }
