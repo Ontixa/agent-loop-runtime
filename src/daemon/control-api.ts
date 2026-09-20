@@ -1,4 +1,5 @@
 import { createServer, Server, IncomingMessage, ServerResponse } from 'http';
+import { randomBytes, timingSafeEqual } from 'crypto';
 import { MissionStore } from '../mission/mission-store.js';
 import { MissionScheduler } from '../engine/scheduler.js';
 import { createMission } from '../engine/mission-factory.js';
@@ -16,12 +17,25 @@ import { logger } from '../logger.js';
  * Versioned under /v1. Binds loopback by default; binding elsewhere requires
  * a bearer token. Approvals decided here are written to the same approvals
  * ledger the runner polls — there is no separate "approve as human" path.
+ *
+ * Security posture (honest — see docs/threat-model.md):
+ * - EVERY request requires a bearer token. If the operator doesn't configure
+ *   one, the daemon generates an ephemeral token at startup and stores it in
+ *   .agentloop/daemon.json for local tooling. This stops network/browser
+ *   attackers; it is NOT a boundary against a local agent running as the
+ *   same OS user (documented advisory limit).
+ * - Host header must match the bound host — rejects DNS-rebinding probes.
+ * - No CORS headers are emitted unless daemon.corsOrigins lists the Origin.
+ * - Responses carry schemaVersion/revision/timestamps; never secrets.
+ * - Events are paginated via ?after=<seq>&limit=<n>.
  */
 
 export interface ControlApiOptions {
   host?: string;
   port?: number;
   token?: string;
+  /** Allowed CORS origins (exact match on Origin header). Default: none. */
+  corsOrigins?: string[];
   /** repos the API serves: repoRoot → {store, policy} */
   repos: Map<string, { store: MissionStore; policy: Policy }>;
   scheduler: MissionScheduler;
@@ -30,10 +44,14 @@ export interface ControlApiOptions {
 }
 
 const API_PREFIX = '/v1';
+const API_SCHEMA = 1;
 const MAX_BODY = 64 * 1024;
+const MAX_EVENTS_PER_PAGE = 500;
 
 export class ControlApi {
   private server: Server | null = null;
+  /** Resolved bearer token — always set after start() (generated if needed). */
+  private token = '';
 
   constructor(private readonly opts: ControlApiOptions) {}
 
@@ -41,12 +59,19 @@ export class ControlApi {
     return `http://${this.opts.host ?? '127.0.0.1'}:${this.opts.port ?? 3210}`;
   }
 
+  /** The token callers must present — generated when not configured. */
+  get bearerToken(): string { return this.token; }
+
   async start(): Promise<void> {
     const host = this.opts.host ?? '127.0.0.1';
     const port = this.opts.port ?? 3210;
     const nonLoopback = host !== '127.0.0.1' && host !== 'localhost' && host !== '::1';
+    this.token = this.opts.token || `alr_${randomBytes(24).toString('hex')}`;
     if (nonLoopback && !this.opts.token) {
       throw new Error('Refusing to bind control API beyond loopback without a token (daemon.token or --token)');
+    }
+    if (!this.opts.token) {
+      logger.info('Control API using generated ephemeral token (stored in daemon.json)');
     }
 
     this.server = createServer((req, res) => void this.handle(req, res).catch(err => {
@@ -57,7 +82,7 @@ export class ControlApi {
     await new Promise<void>((resolve, reject) => {
       this.server!.listen(port, host, () => resolve()).on('error', reject);
     });
-    logger.info(`Control API listening on ${this.url}${nonLoopback ? ' (token auth)' : ''}`);
+    logger.info(`Control API listening on ${this.url} (bearer auth)`);
   }
 
   async stop(): Promise<void> {
@@ -89,50 +114,86 @@ export class ControlApi {
     });
   }
 
+  /** Constant-time bearer check. A token always exists after start(). */
   private authed(req: IncomingMessage): boolean {
-    if (!this.opts.token) return true;
     const header = req.headers.authorization ?? '';
-    return header === `Bearer ${this.opts.token}`;
+    if (!header.startsWith('Bearer ')) return false;
+    const given = Buffer.from(header.slice(7));
+    const expected = Buffer.from(this.token);
+    return given.length === expected.length && timingSafeEqual(given, expected);
+  }
+
+  /**
+   * Host-header check: the request must target the bound host:port. Rejects
+   * DNS-rebinding attempts where a browser page at evil.com resolves to
+   * 127.0.0.1 — the Host header would be 'evil.com', not ours.
+   */
+  private hostOk(req: IncomingMessage): boolean {
+    const host = req.headers.host ?? '';
+    const bound = this.opts.host ?? '127.0.0.1';
+    const port = this.opts.port ?? 3210;
+    const ok = [`${bound}:${port}`, bound, `localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`];
+    return ok.includes(host);
+  }
+
+  /** Emit CORS headers only for explicitly configured origins. */
+  private cors(req: IncomingMessage, res: ServerResponse): void {
+    const origin = req.headers.origin;
+    const allowed = this.opts.corsOrigins ?? [];
+    if (origin && allowed.includes(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+    }
   }
 
   private findMission(id: string): { store: MissionStore; mission: import('../types.js').Mission } | null {
     for (const { store } of this.opts.repos.values()) {
-      const m = store.load(id);
+      let m;
+      try { m = store.load(id); } catch { m = null; } // corrupt → keep searching
       if (m) return { store, mission: m };
     }
     return null;
   }
 
-  /** Public mission summary shape (bounded, no prompts/logs). */
+  /** Public mission summary shape (bounded, no prompts/logs/secrets). */
   private summarize(m: import('../types.js').Mission) {
     return {
+      schemaVersion: API_SCHEMA,
       id: m.id,
       kind: m.kind,
       state: m.state,
+      revision: m.revision ?? 0,
+      policyHash: m.policyHash,
       objective: m.spec.objective.slice(0, 200),
       repo: m.repository.path,
       agent: { type: String(m.agent.type), name: m.agent.name },
       worktree: m.workspace.path,
+      workspaceMode: m.workspace.mode,
       branch: m.workspace.branch,
       usage: m.usage,
       pendingApprovals: m.approvals.filter(a => a.status === 'pending').map(a => ({ id: a.id, gate: a.gate, detail: a.detail })),
       checkpoints: m.checkpoints.length,
+      lastRecovery: m.lastRecovery,
       outcome: m.outcome,
       createdAt: m.createdAt,
-      updatedAt: m.updatedAt
+      updatedAt: m.updatedAt,
+      at: new Date().toISOString()
     };
   }
 
   // ── router ─────────────────────────────────────────────────────────────
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    res.setHeader('Access-Control-Allow-Origin', 'http://localhost');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+    this.cors(req, res);
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
+    if (!this.hostOk(req)) {
+      return this.json(res, 403, { error: 'host header does not match the bound interface' });
+    }
     if (!this.authed(req)) {
-      return this.json(res, 401, { error: 'unauthorized' });
+      return this.json(res, 401, { error: 'unauthorized: bearer token required' });
     }
 
     const url = new URL(req.url ?? '/', this.url);
@@ -141,11 +202,14 @@ export class ControlApi {
 
     if (path === `${API_PREFIX}/status` && req.method === 'GET') {
       return this.json(res, 200, {
+        schemaVersion: API_SCHEMA,
         status: 'ok',
         version: this.opts.version,
         uptimeMs: Date.now() - this.opts.startedAt,
         scheduler: this.opts.scheduler.status(),
-        repos: [...this.opts.repos.keys()]
+        repos: [...this.opts.repos.keys()],
+        corrupt: [...this.opts.repos.values()].flatMap(r => r.store.listCorrupt()),
+        at: new Date().toISOString()
       });
     }
 
@@ -153,7 +217,7 @@ export class ControlApi {
       const missions = [...this.opts.repos.values()]
         .flatMap(r => r.store.list())
         .map(m => this.summarize(m));
-      return this.json(res, 200, { missions });
+      return this.json(res, 200, { schemaVersion: API_SCHEMA, missions });
     }
 
     if (path === `${API_PREFIX}/missions` && req.method === 'POST') {
@@ -166,17 +230,27 @@ export class ControlApi {
       if (!spec?.objective || !spec?.acceptanceCriteria?.length) {
         return this.json(res, 400, { error: 'spec.objective and spec.acceptanceCriteria[] are required' });
       }
+      if (spec.objective.length > 4096) {
+        return this.json(res, 400, { error: 'spec.objective too large' });
+      }
       const agent = (body.agent as AgentConfig) ?? { name: 'default', type: 'qwen' };
-      const mission = createMission({
-        repoPath: repo,
-        spec,
-        agent: agent as AgentConfig,
-        policy: entry.policy,
-        kind: body.kind === 'maintenance' ? 'maintenance' : 'objective',
-        workspaceMode: body.inPlace ? 'in-place' : 'worktree'
-      }, entry.store);
-      this.opts.scheduler.enqueue(repo, mission.id, typeof body.priority === 'number' ? body.priority : 100);
-      return this.json(res, 201, { mission: this.summarize(mission) });
+      try {
+        const mission = createMission({
+          repoPath: repo,
+          spec,
+          agent: agent as AgentConfig,
+          policy: entry.policy,
+          kind: body.kind === 'maintenance' ? 'maintenance' : 'objective',
+          workspaceMode: body.inPlace ? 'in-place' : 'worktree',
+          // The API enforces the same two-flag rule as the CLI — a remote
+          // caller must explicitly assert operator sign-off for in-place work.
+          inPlaceApproved: body.inPlaceApproved === true
+        }, entry.store);
+        this.opts.scheduler.enqueue(repo, mission.id, typeof body.priority === 'number' ? body.priority : 100);
+        return this.json(res, 201, { mission: this.summarize(mission) });
+      } catch (err) {
+        return this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+      }
     }
 
     // /v1/missions/:id[/action]
@@ -188,27 +262,52 @@ export class ControlApi {
       const action = parts[3];
 
       if (!action && req.method === 'GET') {
-        return this.json(res, 200, { mission: this.summarize(mission), tasks: mission.tasks });
+        return this.json(res, 200, {
+          schemaVersion: API_SCHEMA,
+          mission: this.summarize(mission),
+          tasks: mission.tasks
+        });
       }
 
       if (action === 'events' && req.method === 'GET') {
-        return this.json(res, 200, { events: store.events(id) });
+        // Paginated: ?after=<seq> returns events with seq > after; ?limit caps
+        // the page. Consumers poll with nextAfter for incremental reads.
+        const after = Number(url.searchParams.get('after') ?? 0) || 0;
+        const limit = Math.min(
+          Math.max(Number(url.searchParams.get('limit') ?? 100) || 100, 1),
+          MAX_EVENTS_PER_PAGE
+        );
+        const { events, skippedLines } = store.readEvents(id);
+        const page = events.filter(e => (e.seq ?? 0) > after).slice(0, limit);
+        const nextAfter = page.length ? (page.at(-1)!.seq ?? after) : after;
+        return this.json(res, 200, {
+          schemaVersion: API_SCHEMA,
+          missionId: id,
+          events: page,
+          skippedLines,
+          nextAfter,
+          hasMore: events.some(e => (e.seq ?? 0) > nextAfter)
+        });
       }
 
       if (action === 'pause' && req.method === 'POST') {
         if (!this.opts.scheduler.pause(id)) {
           // Not running under this scheduler — pause via state transition
           if (mission.state === MissionState.RUNNING || mission.state === MissionState.VALIDATING || mission.state === MissionState.REPAIRING) {
-            store.transition(mission, MissionState.PAUSED, 'paused via control api');
+            store.transition(mission, MissionState.PAUSED, 'operator pause requested');
           }
         }
         return this.json(res, 200, { mission: this.summarize(store.mustLoad(id)) });
       }
 
       if (action === 'resume' && req.method === 'POST') {
-        const recovered = await recoverMission(store, id);
-        this.opts.scheduler.enqueue(store.repoRoot, id);
-        return this.json(res, 200, { mission: this.summarize(recovered) });
+        try {
+          const recovered = await recoverMission(store, id);
+          this.opts.scheduler.enqueue(store.repoRoot, id);
+          return this.json(res, 200, { mission: this.summarize(recovered) });
+        } catch (err) {
+          return this.json(res, 409, { error: err instanceof Error ? err.message : String(err) });
+        }
       }
 
       if (action === 'cancel' && req.method === 'POST') {
@@ -219,12 +318,14 @@ export class ControlApi {
       }
 
       if (action === 'approvals' && req.method === 'GET') {
-        return this.json(res, 200, { approvals: loadApprovals(store.dir(id)) });
+        return this.json(res, 200, { schemaVersion: API_SCHEMA, approvals: loadApprovals(store.dir(id)) });
       }
 
       if (action === 'approvals' && parts[4] && req.method === 'POST') {
         const body = await this.body(req) as { decision?: string; by?: string };
         const decision = body.decision === 'denied' ? 'denied' : 'approved';
+        // decidedBy records the API caller — the signature over the decision
+        // still requires the operator key when one is configured.
         const updated = decideApproval(store.dir(id), id, parts[4], decision, body.by ?? 'control-api');
         if (!updated) return this.json(res, 409, { error: 'approval not pending or not found' });
         store.emit(id, 'approval_decided', { gate: updated.gate, status: decision, by: body.by ?? 'control-api' });

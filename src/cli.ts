@@ -6,7 +6,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { cmdInit, cmdDoctor, cmdMigrate } from './commands/setup-commands.js';
 import { cmdRun, cmdPause, cmdResume, cmdCancel, cmdApprove } from './commands/mission-commands.js';
-import { cmdMissions, cmdStatus, cmdLogs } from './commands/inspect-commands.js';
+import { cmdMissions, cmdStatus, cmdLogs, cmdReport } from './commands/inspect-commands.js';
 import { collectHealth } from './health/health.js';
 import { MissionScheduler } from './engine/scheduler.js';
 import { Daemon } from './daemon/daemon.js';
@@ -78,6 +78,13 @@ program
   .option('-n, --tail <lines>', 'Lines to tail', '50')
   .option('-r, --repo <path>', 'Repository path')
   .action((id, opts) => cmdLogs(id, { events: opts.events, tail: opts.tail, repo: opts.repo }));
+
+program
+  .command('report <missionId>')
+  .description('Mission report: validation by pass, agent exits, approvals, recovery audit, outcome')
+  .option('--json', 'Machine-readable (full receipt object)')
+  .option('-r, --repo <path>', 'Repository path')
+  .action((id, opts) => cmdReport(id, { json: opts.json, repo: opts.repo }));
 
 program
   .command('pause <missionId>')

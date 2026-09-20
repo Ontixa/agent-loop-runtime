@@ -49,6 +49,7 @@ agentloop run "Fix the date-parsing bug in src/parser.ts" \
 agentloop missions
 agentloop status <missionId>
 agentloop logs <missionId>
+agentloop report <missionId>          # human + --json receipt: passes, gates, recovery audit, outcome
 ```
 
 Missions pause for human approval when policy demands it:
@@ -74,7 +75,7 @@ created → prepared → running → validating → completed
 
 Every mission carries: objective, acceptance criteria, non-goals, repository + base SHA, agent config, policy snapshot, workspace (worktree), budgets, task DAG, pass history, approvals, checkpoints, usage, and a final outcome with an execution receipt.
 
-State is persisted atomically under `.agentloop/missions/<id>/` (mission.json + events.jsonl + agent logs). Crash the runtime — `agentloop resume` picks up safely; interrupted missions become `stale`, never falsely `completed`.
+State is persisted under `.agentloop/missions/<id>/` (`mission.json` CAS + `mission.json.lock`, `events.jsonl` seq/id, `approvals.json`, `receipt.json`, bounded agent logs). Only a live lease-holder (pid + nonce + heartbeat) may write. Crash the runtime — `agentloop resume` audits what was interrupted (tasks, passes, orphaned agent pids, lost-work suspicion) and re-enters through `prepared`; interrupted work is retried with a partial-work warning, never marked done. A corrupt `mission.json` is reported as corrupt, never treated as missing.
 
 ## Safety model
 
@@ -83,7 +84,9 @@ State is persisted atomically under `.agentloop/missions/<id>/` (mission.json + 
 - **No shell execution** — agents, git, and validation commands spawn via explicit argv. No `shell: true`, no free-form command text from agent output.
 - **Deterministic policy** — `agentloop.policy.json` decides what runs, what needs approval, and what is refused. Agents cannot modify their own policy.
 - **Bounded everything** — mission wall-time, agent invocations, repair passes, output buffers, log files, concurrency. Limits expire to `blocked`/`failed`, never to infinity.
-- **Secret hygiene** — known token patterns are redacted from logs and events.
+- **Secret hygiene** — known token patterns are redacted from logs and events; `AGENTLOOP_*` runtime internals are scrubbed from agent child environments.
+- **Approvals are exact** — a decision binds to the mission, the exact argv, the policy fingerprint, and the worktree. Approving `["node","-e"]` does not cover longer commands. Set `AGENTLOOP_APPROVAL_KEY` to require HMAC-signed decisions.
+- **Honest recovery** — see [`docs/threat-model.md`](docs/threat-model.md) for what is enforced vs. detected vs. not claimed, and [`docs/fault-matrix.md`](docs/fault-matrix.md) for the verified fault-injection matrix.
 
 ## Validation gates
 
@@ -129,16 +132,18 @@ Gates are classified against policy before execution:
 
 ## Agent adapters
 
+"Supported" means the adapter contract is exercised by the test suite (spawn/argv/exit/cancellation/bounded output) and the recovery e2e (`npm run test:e2e` runs a real packed install → crash → resume). It does **not** mean every vendor CLI has been smoke-tested on this machine — adapter coverage beyond the fake/custom agents is limited by which CLIs are installed.
+
 | Adapter | Status |
 |---------|--------|
-| Qwen Code | supported |
-| Codex CLI | supported |
-| Claude Code | supported |
-| Devin CLI | supported |
-| OpenCode | supported |
-| Gemini CLI | adapter shipped (untested — no local install) |
-| Aider | adapter shipped (untested — no local install) |
-| Custom argv | supported — any CLI agent |
+| Qwen Code | contract-tested |
+| Codex CLI | contract-tested |
+| Claude Code | contract-tested |
+| Devin CLI | contract-tested |
+| OpenCode | contract-tested |
+| Gemini CLI | adapter shipped (contract-tested; no live smoke on this machine) |
+| Aider | adapter shipped (contract-tested; no live smoke on this machine) |
+| Custom argv | contract-tested + e2e-verified — any CLI agent |
 
 Custom agents use argv templates with validated placeholders — never shell strings:
 

@@ -9,7 +9,8 @@
     "build": "npx tsc",
     "start": "tsx src/cli.ts",
     "dev": "tsx watch src/cli.ts",
-    "test": "tsx --test src/__tests__/*.test.ts"
+    "test": "tsx --test src/__tests__/*.test.ts",
+    "test:e2e": "node scripts/e2e-runtime-recovery.mjs"
   },
   "type": "module",
   "repository": {

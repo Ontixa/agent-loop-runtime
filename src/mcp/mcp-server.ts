@@ -1,6 +1,10 @@
 import { createInterface } from 'readline';
-import { MissionStore } from '../mission/mission-store.js';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
+import { MissionStore, CorruptStateError } from '../mission/mission-store.js';
 import { createMission } from '../engine/mission-factory.js';
+import { recoverMission, pidAlive } from '../engine/recovery.js';
+import { loadApprovals } from '../policy/approvals.js';
 import { isTerminal } from '../mission/state-machine.js';
 import { MissionState } from '../types.js';
 import type { MissionSpec, AgentConfig, Policy } from '../types.js';
@@ -74,6 +78,19 @@ const TOOLS = [
     }
   },
   {
+    name: 'resume_mission',
+    description:
+      'Recover and resume a paused/stale/blocked/waiting mission. If a daemon is running, ' +
+      'hands the mission to it; otherwise re-prepares the record so `agentloop resume` or the ' +
+      'next daemon start can drive it. Never resumes a mission whose approvals are undecided ' +
+      'into running — waiting_for_approval re-enters its wait.',
+    inputSchema: {
+      type: 'object',
+      properties: { missionId: { type: 'string' }, repo: { type: 'string' } },
+      required: ['missionId']
+    }
+  },
+  {
     name: 'list_pending_approvals',
     description: 'List pending approval gates (read-only — approvals are decided by humans).',
     inputSchema: { type: 'object', properties: { repo: { type: 'string' } } }
@@ -99,13 +116,22 @@ export class McpServer {
   }
 
   private findMission(id: string, repo?: string) {
+    const tryLoad = (store: MissionStore) => {
+      try { return store.load(id); }
+      catch (err) {
+        if (err instanceof CorruptStateError) throw new Error(`mission ${id} state is corrupt — inspect .agentloop/missions/${id}/mission.json`);
+        throw err;
+      }
+    };
     if (repo) {
-      const m = this.stores.get(repo)?.load(id);
+      const store = this.stores.get(repo);
+      if (!store) throw new Error(`unknown repo: ${repo}`);
+      const m = tryLoad(store);
       if (!m) throw new Error(`mission not found: ${id}`);
-      return { store: this.stores.get(repo)!, mission: m };
+      return { store, mission: m };
     }
     for (const store of this.stores.values()) {
-      const m = store.load(id);
+      const m = tryLoad(store);
       if (m) return { store, mission: m };
     }
     throw new Error(`mission not found: ${id}`);
@@ -170,11 +196,15 @@ export class McpServer {
 
   private summarize(m: import('../types.js').Mission) {
     return {
+      schemaVersion: 1,
       id: m.id, state: m.state, kind: m.kind,
+      revision: m.revision ?? 0,
+      policyHash: m.policyHash,
       objective: m.spec.objective.slice(0, 200),
       agent: { type: String(m.agent.type), name: m.agent.name },
       worktree: m.workspace.path, branch: m.workspace.branch,
       usage: m.usage, outcome: m.outcome,
+      lastRecovery: m.lastRecovery,
       pendingApprovals: m.approvals.filter(a => a.status === 'pending')
         .map(a => ({ id: a.id, gate: a.gate, detail: a.detail })),
       createdAt: m.createdAt, updatedAt: m.updatedAt
@@ -229,10 +259,44 @@ export class McpServer {
         return { mission: this.summarize(store.mustLoad(mission.id)) };
       }
 
+      case 'resume_mission': {
+        const { store, mission } = this.findMission(String(args.missionId), args.repo as string | undefined);
+        if (isTerminal(mission.state)) {
+          throw new Error(`mission is ${mission.state} — terminal, cannot resume`);
+        }
+
+        // Prefer the running daemon: it owns a live scheduler that can drive
+        // the mission immediately. daemon.json carries the API token.
+        const daemonFile = join(store.repoRoot, '.agentloop', 'daemon.json');
+        const daemon = existsSync(daemonFile)
+          ? (JSON.parse(readFileSync(daemonFile, 'utf-8')) as { pid?: number; url?: string; token?: string })
+          : null;
+        if (daemon?.pid && daemon.url && daemon.token && pidAlive(daemon.pid)) {
+          const res = await fetch(`${daemon.url}/v1/missions/${mission.id}/resume`, {
+            method: 'POST',
+            headers: { authorization: `Bearer ${daemon.token}` }
+          });
+          const body = await res.json() as { mission?: unknown; error?: string };
+          if (!res.ok) throw new Error(`daemon resume failed: ${body.error ?? res.status}`);
+          return { mission: body.mission, via: 'daemon' };
+        }
+
+        // No live daemon — recover the record to PREPARED and report honestly:
+        // nothing will drive it until `agentloop resume` or a daemon start.
+        const recovered = await recoverMission(store, mission.id);
+        return {
+          mission: this.summarize(recovered),
+          via: 'local',
+          note: 'no running daemon — mission is prepared; drive it with `agentloop resume` or start `agentloop daemon`'
+        };
+      }
+
       case 'list_pending_approvals': {
         const store = this.storeFor(args.repo as string | undefined);
+        // Read the authoritative ledger files, not the mission mirror.
         const pending = store.list()
-          .flatMap(m => m.approvals.filter(a => a.status === 'pending')
+          .flatMap(m => loadApprovals(store.dir(m.id))
+            .filter(a => a.status === 'pending')
             .map(a => ({ missionId: m.id, ...a })));
         return { pendingApprovals: pending };
       }

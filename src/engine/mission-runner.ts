@@ -1,9 +1,10 @@
 import { hostname } from 'os';
 import { join } from 'path';
-import { MissionStore } from '../mission/mission-store.js';
-import { isTerminal } from '../mission/state-machine.js';
+import { randomBytes } from 'crypto';
+import { MissionStore, RunnerConflictError } from '../mission/mission-store.js';
+import { isTerminal, canTransition } from '../mission/state-machine.js';
 import { MissionState, TaskStatus } from '../types.js';
-import type { Mission, AgentAdapter, GateResult, TaskNode } from '../types.js';
+import type { Mission, AgentAdapter, TaskNode, MissionPass, AgentInvocationResult } from '../types.js';
 import { supervise } from '../supervisor/process-supervisor.js';
 import { toSpawnInvocation } from '../agents/cli-adapter-base.js';
 import { getAdapter } from '../agents/registry.js';
@@ -12,9 +13,12 @@ import { runValidationGates, resolveGates } from './validation-gates.js';
 import { deterministicReview, reviewToPrompt } from './reviewer.js';
 import { checkpointCommit } from '../git/worktree-manager.js';
 import { diffSummary } from '../git/repo-inspector.js';
-import { requestApproval, approvalStatus } from '../policy/approvals.js';
+import {
+  requestApproval, loadApprovals, policyHash as computePolicyHash, verifyDecision
+} from '../policy/approvals.js';
 import { writeReceipt } from '../mission/receipt.js';
 import { boundTail } from '../util/redact.js';
+import { pidAlive } from './recovery.js';
 import { logger } from '../logger.js';
 
 /**
@@ -25,13 +29,38 @@ import { logger } from '../logger.js';
  *      → waiting_for_approval when a gate requires it
  *      → blocked/failed when budgets or limits expire
  *
- * Crash safety: every state change is persisted before acting; a heartbeat
- * is written while running so a dead runner is detectable as `stale`.
+ * Ownership & crash safety:
+ * - A runner must CLAIM the mission (pid + random nonce) under the store lock
+ *   before driving it. A second runner claiming a live mission is refused —
+ *   two processes can never execute the same mission.
+ * - Every persisted write goes through store.mutate()/transition(), which
+ *   operates on the freshly loaded record under the mission lock. The
+ *   in-memory Mission object is a cache for reads, never the write source.
+ * - Each agent attempt is recorded (invocationId, intent, pid) BEFORE spawn;
+ *   a runner that dies mid-attempt leaves an open pass that recovery marks
+ *   interrupted — outcome unknown — instead of silently redoing the work.
+ * - A heartbeat written under CAS keeps the lease alive; a heartbeat that
+ *   finds the nonce changed means the lease was lost → the runner aborts.
  */
 
 const HEARTBEAT_INTERVAL_MS = 10_000;
 const APPROVAL_POLL_MS = 5_000;
 const AGENT_LOG_TAIL = 64 * 1024;
+const STALE_AFTER_MS = 45_000;
+
+/**
+ * Combine abort signals without relying on AbortSignal.any (Node ≥18.17).
+ * Fires when ANY input fires.
+ */
+function combinedSignal(signals: AbortSignal[]): AbortSignal {
+  const c = new AbortController();
+  const fire = () => c.abort();
+  for (const s of signals) {
+    if (s.aborted) { fire(); break; }
+    s.addEventListener('abort', fire, { once: true });
+  }
+  return c.signal;
+}
 
 export interface RunnerOptions {
   /** Additional validation gate commands (argv) merged with mission spec gates */
@@ -47,60 +76,95 @@ export interface RunnerOptions {
 export class MissionRunner {
   private heartbeat: NodeJS.Timeout | null = null;
   private abort = new AbortController();
+  private pauseAbort = new AbortController();
   private pauseRequested = false;
+  private pauseReason = 'operator';
   private cancelRequested = false;
+  private leaseLost = false;
+  private readonly nonce = randomBytes(8).toString('hex');
+  private hbSeq = 0;
 
   constructor(
     private readonly store: MissionStore,
     private readonly opts: RunnerOptions = {}
   ) {}
 
-  /** Request cooperative pause (checked between steps). */
-  requestPause(): void { this.pauseRequested = true; }
+  /**
+   * Request cooperative pause (checked between steps; aborts in-flight agent).
+   * `reason` is recorded in state history — recovery distinguishes a shutdown
+   * pause (auto-resumable) from an operator pause (never auto-resumed).
+   */
+  requestPause(reason: 'operator' | 'shutdown' = 'operator'): void {
+    this.pauseRequested = true;
+    this.pauseReason = reason;
+    this.pauseAbort.abort();
+  }
   /** Request cooperative cancel. */
-  requestCancel(): void { this.cancelRequested = true; this.abort.abort(); }
+  requestCancel(): void { this.cancelRequested = true; this.abort.abort(); this.pauseAbort.abort(); }
 
   /**
    * Drive a prepared/resumable mission to a terminal or waiting state.
-   * Returns the final mission record.
+   * Returns the final mission record. Throws RunnerConflictError if another
+   * live runner owns the mission.
    */
   async run(missionId: string): Promise<Mission> {
-    const mission = this.store.mustLoad(missionId);
-    if (isTerminal(mission.state)) return mission;
+    const initial = this.store.mustLoad(missionId);
+    if (isTerminal(initial.state)) return initial;
 
-    // Runner identity + heartbeat for stale detection
-    mission.runner = {
+    // Claim ownership: pid + nonce under the mission lock. Refused if a
+    // different live runner holds it — two executors, one mission = never.
+    this.store.claimForRun(missionId, {
       pid: process.pid,
+      nonce: this.nonce,
       startedAt: new Date().toISOString(),
       heartbeatAt: new Date().toISOString(),
+      hbSeq: 0,
       host: `${hostname()}/${process.platform}`
-    };
-    mission.usage.startedAt = mission.usage.startedAt ?? new Date().toISOString();
-    this.store.save(mission);
-    this.startHeartbeat(mission.id);
+    }, { staleAfterMs: STALE_AFTER_MS, pidAlive });
+
+    this.store.mutate(missionId, m => {
+      m.usage.startedAt = m.usage.startedAt ?? new Date().toISOString();
+    });
+    this.startHeartbeat(missionId);
 
     try {
-      if (mission.state === MissionState.PREPARED || mission.state === MissionState.PAUSED ||
-          mission.state === MissionState.STALE || mission.state === MissionState.BLOCKED) {
+      let mission = this.store.mustLoad(missionId);
+      // Resume path honors the state machine: stale/blocked missions re-enter
+      // through PREPARED (recovery audited them), paused/prepared go straight.
+      if (mission.state === MissionState.STALE || mission.state === MissionState.BLOCKED) {
+        mission = this.store.transition(mission, MissionState.PREPARED, 'resume: re-entering pipeline');
+      }
+      if (mission.state === MissionState.PREPARED || mission.state === MissionState.PAUSED) {
         this.store.transition(mission, MissionState.RUNNING, 'runner started');
       }
 
-      await this.executeLoop(mission);
-      return this.store.mustLoad(mission.id);
+      await this.executeLoop(missionId);
+      return this.store.mustLoad(missionId);
+    } catch (err) {
+      // A runner-level failure must not masquerade as mission success, and a
+      // crashed runner must not leave the mission looking actively-driven.
+      if (err instanceof RunnerConflictError) throw err;
+      const reason = err instanceof Error ? err.message : String(err);
+      try {
+        const m = this.store.mustLoad(missionId);
+        if (!isTerminal(m.state)) {
+          this.store.transition(m, MissionState.BLOCKED, `runner error: ${reason.slice(0, 300)}`);
+          this.store.emit(missionId, 'mission_blocked', { reason: `runner error: ${reason.slice(0, 200)}` });
+        }
+      } catch { /* state may be corrupt — stale detection is the backstop */ }
+      return this.store.mustLoad(missionId);
     } finally {
       this.stopHeartbeat();
-      const final = this.store.mustLoad(mission.id);
-      if (final.runner?.pid === process.pid) {
-        final.runner = undefined;
-        this.store.save(final);
-      }
+      this.store.releaseRunner(missionId, this.nonce);
     }
   }
 
   // ── main loop ─────────────────────────────────────────────────────────
 
-  private async executeLoop(mission: Mission): Promise<void> {
-    while (!isTerminal(mission.state)) {
+  private async executeLoop(missionId: string): Promise<void> {
+    for (;;) {
+      const mission = this.store.mustLoad(missionId);
+      if (isTerminal(mission.state)) return;
       if (this.checkInterrupts(mission)) return;
       if (this.checkBudget(mission)) return;
 
@@ -123,33 +187,45 @@ export class MissionRunner {
     }
   }
 
-  /** Check pause/cancel requests; applies transitions. Returns true if loop should exit. */
+  /**
+   * Check pause/cancel requests and external state changes (control API, CLI).
+   * Returns true if the loop should exit.
+   */
   private checkInterrupts(mission: Mission): boolean {
     const fresh = this.store.mustLoad(mission.id);
-    // External operators can also set state via the store (control API)
+    // External operators can set state via the store (control API / CLI)
     if (fresh.state === MissionState.PAUSED || fresh.state === MissionState.CANCELLED ||
         fresh.state === MissionState.BLOCKED || isTerminal(fresh.state)) {
       mission.state = fresh.state;
       return true;
     }
+    if (this.leaseLost) {
+      logger.error('Runner lease lost — another owner or a stale marking won', { mission: mission.id });
+      this.abort.abort();
+      return true;
+    }
     if (this.cancelRequested) {
       this.store.transition(mission, MissionState.CANCELLED, 'cancel requested');
-      this.finalizeOutcome(mission, 'cancelled', 'Mission cancelled by operator');
+      this.finalizeOutcome(mission.id, 'cancelled', 'Mission cancelled by operator');
       return true;
     }
     if (this.pauseRequested) {
-      this.store.transition(mission, MissionState.PAUSED, 'pause requested');
+      if (canTransition(fresh.state, MissionState.PAUSED)) {
+        this.store.transition(mission, MissionState.PAUSED, `${this.pauseReason} pause requested`);
+      }
+      // If the state can't accept PAUSED (e.g. already waiting/blocked), the
+      // loop still exits — the mission is not doing agent work.
       return true;
     }
     return false;
   }
 
-  /** Enforce wall-time and invocation budgets. */
+  /** Enforce wall-time and invocation budgets (persisted, cumulative across resumes). */
   private checkBudget(mission: Mission): boolean {
     const elapsedMin = mission.usage.startedAt
       ? (Date.now() - Date.parse(mission.usage.startedAt)) / 60_000
       : 0;
-    mission.usage.wallTimeMs = mission.usage.startedAt
+    const wallTimeMs = mission.usage.startedAt
       ? Date.now() - Date.parse(mission.usage.startedAt) : 0;
 
     if (elapsedMin > mission.budget.maxMissionMinutes) {
@@ -159,6 +235,10 @@ export class MissionRunner {
     if (mission.usage.agentInvocations >= mission.budget.maxAgentInvocations) {
       this.fail(mission, `budget exceeded: ${mission.usage.agentInvocations} agent invocations ≥ max ${mission.budget.maxAgentInvocations}`);
       return true;
+    }
+    if (wallTimeMs !== mission.usage.wallTimeMs) {
+      this.store.mutate(mission.id, m => { m.usage.wallTimeMs = wallTimeMs; });
+      mission.usage.wallTimeMs = wallTimeMs;
     }
     return false;
   }
@@ -174,7 +254,7 @@ export class MissionRunner {
         // Never vacuously complete: an empty graph means planning produced no
         // executable work — that's a failure, not success.
         this.store.transition(mission, MissionState.FAILED, 'no executable tasks in plan');
-        this.finalizeOutcome(mission, 'failed', 'Planner produced no executable tasks');
+        this.finalizeOutcome(mission.id, 'failed', 'Planner produced no executable tasks');
         return;
       }
       const blocked = blockedTasks(mission.tasks);
@@ -182,59 +262,114 @@ export class MissionRunner {
         this.store.transition(mission, MissionState.VALIDATING, 'task set exhausted');
         return;
       }
-      // All remaining tasks already terminal — move to validation
-      if (mission.tasks.every(t => t.status === TaskStatus.COMPLETED || t.status === TaskStatus.FAILED || t.status === TaskStatus.CANCELLED)) {
+      if (mission.tasks.every(t =>
+        t.status === TaskStatus.COMPLETED || t.status === TaskStatus.FAILED || t.status === TaskStatus.CANCELLED)) {
         this.store.transition(mission, MissionState.VALIDATING, 'all tasks finished');
         return;
       }
+      // Anything else pending-but-not-ready (shouldn't happen post-audit):
+      // do not spin — hand the workspace to validation to judge real state.
+      this.store.transition(mission, MissionState.VALIDATING, 'no ready tasks; validating actual state');
+      return;
     }
-
-    const adapter = getAdapter(String(mission.agent.type), mission.agent);
 
     for (const task of ready) {
       if (this.checkInterrupts(mission) || this.checkBudget(mission)) return;
 
-      task.status = TaskStatus.RUNNING;
-      task.startedAt = new Date().toISOString();
-      this.store.save(mission);
-      this.store.emit(mission.id, 'task_started', { taskId: task.id, title: task.title.slice(0, 120) });
+      // Record the ATTEMPT before spawning: invocation id, intent, task→running.
+      // The attempt consumes budget even if the runner dies mid-flight.
+      const invocationId = `inv_${randomBytes(6).toString('hex')}`;
+      const isResumeRetry = task.interrupted === true;
+      this.store.mutate(mission.id, m => {
+        const t = m.tasks.find(x => x.id === task.id);
+        if (!t) return;
+        t.status = TaskStatus.RUNNING;
+        t.startedAt = new Date().toISOString();
+        m.usage.agentInvocations++;
+        const pass: MissionPass = {
+          n: m.passes.length + 1,
+          kind: 'execute',
+          agentInvocationId: invocationId,
+          intent: { taskId: task.id, kind: 'execute' },
+          startedAt: new Date().toISOString()
+        };
+        m.passes.push(pass);
+      });
+      Object.assign(mission, this.store.mustLoad(mission.id));
+      this.store.emit(mission.id, 'task_started', {
+        taskId: task.id, title: task.title.slice(0, 120),
+        interrupted: isResumeRetry || undefined
+      });
 
       const result = await this.invokeAgent(mission, task, 'execute');
-      mission.usage.agentInvocations++;
 
-      const pass = this.openPass(mission, 'execute');
-      pass.agentExit = result.exitKind;
+      // Pause vs cancel: supervise reports 'cancelled' for both signals —
+      // distinguish by which flag was raised.
+      if (result.exitKind === 'cancelled' && this.pauseRequested && !this.cancelRequested) {
+        this.store.mutate(mission.id, m => {
+          const t = m.tasks.find(x => x.id === task.id);
+          if (t) {
+            t.status = TaskStatus.PENDING;
+            t.interrupted = true;
+            t.result = 'interrupted: paused mid-execution, outcome unknown';
+          }
+          const p = m.passes.at(-1);
+          if (p && p.agentInvocationId === invocationId) {
+            p.finishedAt = new Date().toISOString();
+            p.interrupted = true;
+            p.note = 'paused mid-execution';
+          }
+        });
+        this.store.emit(mission.id, 'work_interrupted', { taskId: task.id, reason: 'pause' });
+        this.store.transition(mission, MissionState.PAUSED, `${this.pauseReason} pause requested`);
+        return;
+      }
 
       if (result.exitKind === 'cancelled') {
-        task.status = TaskStatus.CANCELLED;
-        task.completedAt = new Date().toISOString();
-        this.closePass(mission, pass, `cancelled`);
-        this.store.save(mission);
+        this.store.mutate(mission.id, m => {
+          const t = m.tasks.find(x => x.id === task.id);
+          if (t) { t.status = TaskStatus.CANCELLED; t.completedAt = new Date().toISOString(); }
+          const p = m.passes.at(-1);
+          if (p && p.agentInvocationId === invocationId) {
+            p.finishedAt = new Date().toISOString();
+            p.note = 'cancelled';
+          }
+        });
         this.store.transition(mission, MissionState.CANCELLED, 'agent cancelled');
-        this.finalizeOutcome(mission, 'cancelled', 'Agent invocation cancelled');
+        this.finalizeOutcome(mission.id, 'cancelled', 'Agent invocation cancelled');
         return;
       }
 
       // Honest task record: only a clean exit completes the task. A nonzero
       // exit doesn't end the mission — repair/validation decide — but the
       // record must never claim failed work succeeded.
-      task.status = result.exitKind === 'success' ? TaskStatus.COMPLETED : TaskStatus.FAILED;
-      task.completedAt = new Date().toISOString();
-      task.outputSummary = boundTail(result.outputTail, 2 * 1024).text;
-      task.result = result.exitKind;
-      if (result.exitKind === 'spawn-error') task.error = result.outputTail.slice(0, 500);
-
-      this.closePass(mission, pass, result.exitKind);
+      this.store.mutate(mission.id, m => {
+        const t = m.tasks.find(x => x.id === task.id);
+        const p = m.passes.at(-1);
+        if (t) {
+          t.status = result.exitKind === 'success' ? TaskStatus.COMPLETED : TaskStatus.FAILED;
+          t.completedAt = new Date().toISOString();
+          t.outputSummary = boundTail(result.outputTail, 2 * 1024).text;
+          t.result = result.exitKind;
+          if (result.exitKind === 'spawn-error') t.error = result.outputTail.slice(0, 500);
+        }
+        if (p && p.agentInvocationId === invocationId) {
+          p.finishedAt = new Date().toISOString();
+          p.agentExit = result.exitKind;
+        }
+      });
       this.store.emit(mission.id, 'task_finished', {
-        taskId: task.id, status: task.status, exit: result.exitKind
+        taskId: task.id,
+        status: result.exitKind === 'success' ? 'completed' : 'failed',
+        exit: result.exitKind
       });
       this.store.emit(mission.id, 'agent_finished', {
         exit: result.exitKind, exitCode: result.exitCode, durationMs: result.durationMs,
-        truncated: result.outputTruncated
+        truncated: result.outputTruncated, invocationId
       });
 
-      await this.checkpoint(mission, 'pass', pass.n);
-      this.store.save(mission);
+      await this.checkpoint(mission.id, 'pass');
+      Object.assign(mission, this.store.mustLoad(mission.id));
     }
 
     this.store.transition(mission, MissionState.VALIDATING, 'execute pass complete');
@@ -249,36 +384,38 @@ export class MissionRunner {
       ...extra.map(g => ({ name: g.name, argv: g.argv }))
     ];
 
-    if (unknown.length > 0) {
-      this.store.emit(mission.id, 'validation_started', {
-        note: `ignored unconfigured commands: ${unknown.join(', ')}`
-      });
-    } else {
-      this.store.emit(mission.id, 'validation_started', { gates: allGates.map(g => g.name) });
-    }
+    this.store.emit(mission.id, 'validation_started', {
+      gates: allGates.map(g => g.name),
+      ...(unknown.length > 0 ? { note: `ignored unconfigured commands: ${unknown.join(', ')}` } : {})
+    });
 
-    // Commands a human already approved for this mission run as allowed.
-    const approvedArgv = mission.approvals
-      .filter(a => a.status === 'approved' && a.commands)
-      .flatMap(a => a.commands!);
+    // Approvals decided for this mission and bound to its policy snapshot.
+    const approved = loadApprovals(this.store.dir(mission.id))
+      .filter(a => a.status === 'approved');
 
     const { results, allPassed, needsApproval } = await runValidationGates(
-      allGates, mission.workspace.path, mission.policy, { approvedArgv }
+      allGates, mission.workspace.path, mission.policy, { approved }
     );
 
-    const pass = this.currentPass(mission);
-    if (pass) pass.gates = results;
+    const passN = mission.passes.at(-1)?.n;
+    this.store.mutate(mission.id, m => {
+      const p = m.passes.at(-1);
+      if (p) p.gates = results;
+      // Keep in-file approvals mirror in sync with the ledger
+      m.approvals = loadApprovals(this.store.dir(m.id));
+    });
+    Object.assign(mission, this.store.mustLoad(mission.id));
 
     this.store.emit(mission.id, 'validation_finished', {
       passed: allPassed,
+      pass: passN,
       gates: results.map(r => ({ name: r.name, passed: r.passed, note: r.note }))
     });
 
     // Gates needing approval → raise approval gate
     if (needsApproval.length > 0) {
       const detail = `Validation commands require approval: ${needsApproval.map(g => `${g.name} (${g.command.join(' ')})`).join(', ')}`;
-      this.raiseApproval(mission, 'dangerous-command', detail, MissionState.VALIDATING,
-        needsApproval.map(g => g.command));
+      this.raiseApproval(mission, 'dangerous-command', detail, needsApproval.map(g => g.command));
       return;
     }
 
@@ -288,7 +425,10 @@ export class MissionRunner {
       baseSha: mission.repository.baseSha,
       mission
     });
-    if (pass) pass.review = review;
+    this.store.mutate(mission.id, m => {
+      const p = m.passes.at(-1);
+      if (p) p.review = review;
+    });
     this.store.emit(mission.id, 'review_finished', {
       verdict: review.verdict, findings: review.findings.length
     });
@@ -300,15 +440,16 @@ export class MissionRunner {
     const criteriaSatisfied = allGates.length > 0 ? allPassed : failedTasks.length === 0;
     if (review.verdict === 'reject') {
       this.raiseApproval(mission, 'scope-expansion',
-        `Reviewer rejected the diff: ${review.findings.join('; ')}`, MissionState.VALIDATING);
+        `Reviewer rejected the diff: ${review.findings.join('; ')}`);
       return;
     }
 
     if (criteriaSatisfied && review.verdict === 'approve') {
-      await this.checkpoint(mission, 'final');
-      this.store.transition(mission, MissionState.COMPLETED, 'acceptance criteria satisfied');
-      this.finalizeOutcome(mission, 'completed', 'Validation gates passed and review approved');
-      this.store.emit(mission.id, 'mission_completed', { summary: mission.outcome?.summary });
+      await this.checkpoint(mission.id, 'final');
+      const fresh = this.store.mustLoad(mission.id);
+      this.store.transition(fresh, MissionState.COMPLETED, 'acceptance criteria satisfied');
+      this.finalizeOutcome(mission.id, 'completed', 'Validation gates passed and review approved');
+      this.store.emit(mission.id, 'mission_completed', { summary: 'acceptance criteria satisfied' });
       return;
     }
 
@@ -326,52 +467,107 @@ export class MissionRunner {
 
   /** REPAIRING: run one repair pass with feedback, then re-validate. */
   private async stepRepair(mission: Mission): Promise<void> {
-    mission.usage.repairPasses++;
-    const adapter = getAdapter(String(mission.agent.type), mission.agent);
-
-    const pass = this.openPass(mission, 'repair');
-    const lastPass = mission.passes[mission.passes.length - 2];
-
+    const lastPass = mission.passes.at(-1);
     const feedback = this.buildRepairPrompt(mission, lastPass);
-    const task: TaskNode = {
-      id: `repair_${pass.n}`,
-      title: `Repair pass ${mission.usage.repairPasses}`,
-      dependsOn: [],
-      status: TaskStatus.RUNNING,
-      pass: pass.n,
-      startedAt: new Date().toISOString()
-    };
-    this.store.save(mission);
+    const invocationId = `inv_${randomBytes(6).toString('hex')}`;
 
-    const result = await this.invokeAgent(mission, task, 'repair', feedback);
-    mission.usage.agentInvocations++;
-    pass.agentExit = result.exitKind;
+    const repairTaskId = `repair_${mission.passes.length + 1}`;
+    this.store.mutate(mission.id, m => {
+      m.usage.repairPasses++;
+      m.usage.agentInvocations++;
+      const pass: MissionPass = {
+        n: m.passes.length + 1,
+        kind: 'repair',
+        agentInvocationId: invocationId,
+        intent: { taskId: repairTaskId, kind: 'repair' },
+        startedAt: new Date().toISOString()
+      };
+      m.passes.push(pass);
+      const task: TaskNode = {
+        id: repairTaskId,
+        title: `Repair pass ${m.usage.repairPasses}`,
+        dependsOn: [],
+        status: TaskStatus.RUNNING,
+        pass: pass.n,
+        startedAt: new Date().toISOString()
+      };
+      m.tasks.push(task);
+    });
+    Object.assign(mission, this.store.mustLoad(mission.id));
 
-    if (result.exitKind === 'cancelled') {
-      this.closePass(mission, pass, 'cancelled');
-      this.store.save(mission);
-      this.store.transition(mission, MissionState.CANCELLED, 'repair cancelled');
-      this.finalizeOutcome(mission, 'cancelled', 'Repair pass cancelled');
+    const repairTask = mission.tasks.find(t => t.id === repairTaskId)!;
+    const result = await this.invokeAgent(mission, repairTask, 'repair', feedback);
+
+    if (result.exitKind === 'cancelled' && this.pauseRequested && !this.cancelRequested) {
+      this.store.mutate(mission.id, m => {
+        const t = m.tasks.find(x => x.id === repairTaskId);
+        if (t) { t.status = TaskStatus.PENDING; t.interrupted = true; t.result = 'interrupted: paused mid-repair'; }
+        const p = m.passes.at(-1);
+        if (p && p.agentInvocationId === invocationId) { p.finishedAt = new Date().toISOString(); p.interrupted = true; p.note = 'paused mid-repair'; }
+        m.usage.repairPasses--; // the interrupted pass did not complete — don't consume the budget for it
+      });
+      this.store.emit(mission.id, 'work_interrupted', { taskId: repairTaskId, reason: 'pause' });
+      this.store.transition(mission, MissionState.PAUSED, `${this.pauseReason} pause requested`);
       return;
     }
 
-    task.status = result.exitKind === 'spawn-error' ? TaskStatus.FAILED : TaskStatus.COMPLETED;
-    task.completedAt = new Date().toISOString();
-    mission.tasks.push(task);
+    if (result.exitKind === 'cancelled') {
+      this.store.mutate(mission.id, m => {
+        const p = m.passes.at(-1);
+        if (p && p.agentInvocationId === invocationId) { p.finishedAt = new Date().toISOString(); p.note = 'cancelled'; }
+      });
+      this.store.transition(mission, MissionState.CANCELLED, 'repair cancelled');
+      this.finalizeOutcome(mission.id, 'cancelled', 'Repair pass cancelled');
+      return;
+    }
 
-    this.closePass(mission, pass, result.exitKind);
-    await this.checkpoint(mission, 'repair', pass.n);
-    this.store.save(mission);
+    this.store.mutate(mission.id, m => {
+      const t = m.tasks.find(x => x.id === repairTaskId);
+      if (t) {
+        t.status = result.exitKind === 'spawn-error' ? TaskStatus.FAILED : TaskStatus.COMPLETED;
+        t.completedAt = new Date().toISOString();
+        t.result = result.exitKind;
+      }
+      const p = m.passes.at(-1);
+      if (p && p.agentInvocationId === invocationId) {
+        p.finishedAt = new Date().toISOString();
+        p.agentExit = result.exitKind;
+      }
+    });
+    this.store.emit(mission.id, 'agent_finished', {
+      exit: result.exitKind, exitCode: result.exitCode, durationMs: result.durationMs,
+      truncated: result.outputTruncated, invocationId
+    });
+    await this.checkpoint(mission.id, 'repair');
 
     this.store.transition(mission, MissionState.VALIDATING, `repair pass ${mission.usage.repairPasses} done`);
   }
 
-  /** WAITING_FOR_APPROVAL: poll for decisions; timeout → blocked. */
+  /** WAITING_FOR_APPROVAL: poll the ledger for decisions; timeout → blocked. */
   private async stepApproval(mission: Mission): Promise<void> {
-    const pending = mission.approvals.filter(a => a.status === 'pending');
+    // The ledger on disk is authoritative — the operator may decide from a
+    // different process (CLI/control API) while this runner waits.
+    const disk = loadApprovals(this.store.dir(mission.id));
+    const pending = disk.filter(a => a.status === 'pending');
+
     if (pending.length === 0) {
-      // Decisions arrived via store — figure out where to go
-      const last = mission.approvals.at(-1);
+      // Every gate is decided. Honor the newest decision ONLY if it verifies:
+      // with AGENTLOOP_APPROVAL_KEY configured, an unsigned or mis-signed
+      // approvals.json write is not a human decision — it's a forgery attempt
+      // (e.g. by the agent process itself, which has filesystem access).
+      const last = disk.at(-1);
+      this.store.mutate(mission.id, m => { m.approvals = disk; });
+      if (last && verifyDecision(last) !== 'ok') {
+        this.store.emit(mission.id, 'approval_unverified', {
+          approvalId: last.id, reason: verifyDecision(last)
+        });
+        this.store.transition(mission, MissionState.BLOCKED,
+          'approval decision failed integrity check — operator must re-decide');
+        return;
+      }
+      this.store.emit(mission.id, 'approval_decided', {
+        gate: last?.gate, status: last?.status, by: last?.decidedBy
+      });
       if (last?.status === 'denied') {
         this.store.transition(mission, MissionState.BLOCKED, `approval denied: ${last.gate}`);
         this.store.emit(mission.id, 'mission_blocked', { gate: last.gate });
@@ -389,24 +585,12 @@ export class MissionRunner {
       return;
     }
 
-    // Re-read approvals from disk (operator may have decided externally)
-    const { loadApprovals } = await import('../policy/approvals.js');
-    const disk = loadApprovals(this.store.dir(mission.id));
-    mission.approvals = disk;
-    const decided = disk.find(a => a.id === oldest.id && a.status !== 'pending');
-
-    if (decided) {
-      this.store.emit(mission.id, 'approval_decided', {
-        gate: decided.gate, status: decided.status, by: decided.decidedBy
-      });
-      if (decided.status === 'denied') {
-        this.store.transition(mission, MissionState.BLOCKED, `approval denied: ${decided.gate}`);
-        this.store.emit(mission.id, 'mission_blocked', { gate: decided.gate });
-      } else {
-        this.store.transition(mission, MissionState.RUNNING, 'approval granted');
-      }
-      return;
-    }
+    // Track human wait time separately from agent runtime
+    this.store.mutate(mission.id, m => {
+      m.usage.approvalWaitMs = (m.usage.approvalWaitMs ?? 0) + APPROVAL_POLL_MS;
+      m.approvals = disk;
+    });
+    Object.assign(mission, this.store.mustLoad(mission.id));
 
     // Still pending — wait and re-check (loop re-enters this step)
     await new Promise(r => setTimeout(r, APPROVAL_POLL_MS));
@@ -419,26 +603,16 @@ export class MissionRunner {
     task: TaskNode,
     kind: 'execute' | 'repair',
     promptOverride?: string
-  ): Promise<import('../types.js').AgentInvocationResult> {
+  ): Promise<AgentInvocationResult> {
     const adapter = getAdapter(String(mission.agent.type), mission.agent);
-    const logFile = join(this.store.dir(mission.id), `agent-pass-${mission.usage.agentInvocations + 1}.log`);
+    const invocationId = mission.passes.at(-1)?.agentInvocationId;
+    const logFile = join(this.store.dir(mission.id), `agent-${invocationId ?? `pass-${mission.usage.agentInvocations}`}.log`);
 
-    const prompt = promptOverride ?? this.buildTaskPrompt(mission, task);
-    const ctx = {
-      prompt,
-      cwd: mission.workspace.path,
-      missionId: mission.id,
-      taskId: task.id,
-      pass: mission.usage.repairPasses + 1,
-      signal: this.abort.signal,
-      timeoutMs: mission.budget.agentTimeoutMs,
-      maxOutputBytes: AGENT_LOG_TAIL,
-      logFile,
-      env: mission.agent.env
-    };
+    const prompt = promptOverride ??
+      this.buildTaskPrompt(mission, task, mission.tasks.find(t => t.id === task.id)?.interrupted === true);
 
     this.store.emit(mission.id, 'agent_started', {
-      agent: String(mission.agent.type), taskId: task.id, kind
+      agent: String(mission.agent.type), taskId: task.id, kind, invocationId
     });
 
     if (this.opts.dryRun) {
@@ -448,7 +622,22 @@ export class MissionRunner {
       };
     }
 
+    const signal = combinedSignal([this.abort.signal, this.pauseAbort.signal]);
+    const ctx: import('../types.js').AgentInvocationContext = {
+      prompt,
+      cwd: mission.workspace.path,
+      missionId: mission.id,
+      taskId: task.id,
+      pass: mission.passes.at(-1)?.n ?? 0,
+      signal,
+      env: mission.agent.env,
+      timeoutMs: mission.budget.agentTimeoutMs,
+      maxOutputBytes: AGENT_LOG_TAIL,
+      logFile
+    };
+
     const inv = toSpawnInvocation(adapter.buildInvocation(ctx, mission.agent));
+
     const result = await supervise({
       command: inv.command,
       args: inv.args,
@@ -457,18 +646,29 @@ export class MissionRunner {
       timeoutMs: ctx.timeoutMs,
       maxOutputBytes: ctx.maxOutputBytes,
       logFile,
-      signal: this.abort.signal
+      signal,
+      // Persist the spawned pid immediately — recovery uses it to detect and
+      // reap orphaned agent processes after a runner crash.
+      onSpawn: (pid) => {
+        if (pid) this.store.mutate(mission.id, m => {
+          const p = m.passes.at(-1);
+          if (p && p.agentInvocationId === invocationId) p.agentPid = pid;
+        });
+      }
     });
     return { ...result, exitKind: adapter.classifyExit(result) };
   }
 
-  private buildTaskPrompt(mission: Mission, task: TaskNode): string {
+  private buildTaskPrompt(mission: Mission, task: TaskNode, interrupted: boolean): string {
     const spec = mission.spec;
     return [
       `Mission objective: ${spec.objective}`,
       spec.scope?.length ? `Scope: work only within ${spec.scope.join(', ')}` : '',
       spec.nonGoals?.length ? `Non-goals (do NOT do these): ${spec.nonGoals.join(', ')}` : '',
       `Current task: ${task.title}`,
+      interrupted
+        ? 'A previous attempt at this task was interrupted mid-execution — partial changes may already exist in the workspace. Inspect the current state before redoing work; do not assume a clean tree.'
+        : '',
       `Acceptance criteria: ${spec.acceptanceCriteria.join('; ')}`,
       spec.riskConstraints?.length ? `Constraints: ${spec.riskConstraints.join(', ')}` : '',
       'Work in the current directory only. Do not commit, push, or open pull requests.',
@@ -476,7 +676,7 @@ export class MissionRunner {
     ].filter(Boolean).join('\n');
   }
 
-  private buildRepairPrompt(mission: Mission, lastPass: import('../types.js').MissionPass | undefined): string {
+  private buildRepairPrompt(mission: Mission, lastPass: MissionPass | undefined): string {
     const parts: string[] = [
       `Mission objective: ${mission.spec.objective}`,
       '',
@@ -503,27 +703,8 @@ export class MissionRunner {
     return parts.join('\n');
   }
 
-  private openPass(mission: Mission, kind: 'execute' | 'repair'): import('../types.js').MissionPass {
-    const pass: import('../types.js').MissionPass = {
-      n: mission.passes.length + 1,
-      kind,
-      startedAt: new Date().toISOString()
-    };
-    mission.passes.push(pass);
-    return pass;
-  }
-
-  private closePass(mission: Mission, pass: import('../types.js').MissionPass, note?: string): void {
-    pass.finishedAt = new Date().toISOString();
-    if (note) pass.note = note;
-    this.store.save(mission);
-  }
-
-  private currentPass(mission: Mission): import('../types.js').MissionPass | undefined {
-    return mission.passes.at(-1);
-  }
-
-  private async checkpoint(mission: Mission, kind: import('../types.js').Checkpoint['kind'], pass?: number): Promise<void> {
+  private async checkpoint(missionId: string, kind: import('../types.js').Checkpoint['kind'], pass?: number): Promise<void> {
+    const mission = this.store.mustLoad(missionId);
     if (!mission.policy.allowLocalCommit) return;
     try {
       const sha = await checkpointCommit(
@@ -532,13 +713,16 @@ export class MissionRunner {
       );
       if (sha) {
         const diff = await diffSummary(mission.workspace.path, mission.repository.baseSha).catch(() => undefined);
-        mission.checkpoints.push({ sha, at: new Date().toISOString(), kind, pass, diffSummary: diff });
-        this.store.save(mission);
-        this.store.emit(mission.id, 'checkpoint_created', { sha: sha.slice(0, 10), kind, pass, diff });
+        this.store.mutate(missionId, m => {
+          m.checkpoints.push({ sha, at: new Date().toISOString(), kind, pass, diffSummary: diff });
+          const p = m.passes.at(-1);
+          if (p && !p.checkpointSha) p.checkpointSha = sha;
+        });
+        this.store.emit(missionId, 'checkpoint_created', { sha: sha.slice(0, 10), kind, pass, diff });
       }
     } catch (err) {
       logger.warn('Checkpoint failed (non-fatal)', {
-        mission: mission.id,
+        mission: missionId,
         error: err instanceof Error ? err.message : String(err)
       });
     }
@@ -548,48 +732,51 @@ export class MissionRunner {
     mission: Mission,
     gate: import('../types.js').ApprovalRequest['gate'],
     detail: string,
-    fromState: MissionState,
     commands?: string[][]
   ): void {
-    const req = requestApproval(this.store.dir(mission.id), mission.id, gate, detail, commands);
-    mission.approvals.push(req);
-    this.store.save(mission);
-    this.store.emit(mission.id, 'approval_required', { gate, detail: detail.slice(0, 300) });
+    const dir = this.store.dir(mission.id);
+    const req = requestApproval(dir, mission.id, gate, detail, commands, {
+      policyHash: mission.policyHash ?? computePolicyHash(mission.policy),
+      worktree: mission.workspace.path
+    });
+    this.store.mutate(mission.id, m => { m.approvals = loadApprovals(dir); });
+    this.store.emit(mission.id, 'approval_required', { gate, detail: detail.slice(0, 300), approvalId: req.id });
     this.store.transition(mission, MissionState.WAITING_FOR_APPROVAL, `gate: ${gate}`);
   }
 
   private fail(mission: Mission, reason: string): void {
     this.store.transition(mission, MissionState.FAILED, reason);
-    this.finalizeOutcome(mission, 'failed', reason);
+    this.finalizeOutcome(mission.id, 'failed', reason);
     this.store.emit(mission.id, 'mission_failed', { reason: reason.slice(0, 300) });
   }
 
-  private finalizeOutcome(mission: Mission, result: 'completed' | 'failed' | 'cancelled', summary: string): void {
-    const fresh = this.store.mustLoad(mission.id);
-    fresh.outcome = {
-      result,
-      summary,
-      finalSha: fresh.checkpoints.at(-1)?.sha,
-      at: new Date().toISOString()
-    };
-    this.store.save(fresh);
+  private finalizeOutcome(missionId: string, result: 'completed' | 'failed' | 'cancelled', summary: string): void {
+    this.store.mutate(missionId, fresh => {
+      fresh.outcome = {
+        result,
+        summary,
+        finalSha: fresh.checkpoints.at(-1)?.sha,
+        at: new Date().toISOString()
+      };
+    });
     try {
-      fresh.outcome.receiptPath = writeReceipt(this.store.repoRoot, fresh);
-      this.store.save(fresh);
+      const fresh = this.store.mustLoad(missionId);
+      const receiptPath = writeReceipt(this.store.repoRoot, fresh);
+      this.store.mutate(missionId, m => { m.outcome!.receiptPath = receiptPath; });
     } catch { /* receipt is best-effort */ }
-    Object.assign(mission, fresh);
   }
 
   private startHeartbeat(missionId: string): void {
     this.heartbeat = setInterval(() => {
-      try {
-        const m = this.store.load(missionId);
-        if (m && m.runner?.pid === process.pid) {
-          m.runner.heartbeatAt = new Date().toISOString();
-          this.store.save(m);
-          this.store.emit(missionId, 'runner_heartbeat', { pid: process.pid });
-        }
-      } catch { /* heartbeat is best-effort */ }
+      this.hbSeq++;
+      const ok = this.store.heartbeat(missionId, this.nonce, this.hbSeq);
+      if (!ok) {
+        this.leaseLost = true;
+        this.abort.abort();
+        this.pauseAbort.abort();
+        this.store.emit(missionId, 'lease_lost', { nonce: this.nonce.slice(0, 8), pid: process.pid });
+        this.stopHeartbeat();
+      }
     }, HEARTBEAT_INTERVAL_MS);
     this.heartbeat.unref();
   }
