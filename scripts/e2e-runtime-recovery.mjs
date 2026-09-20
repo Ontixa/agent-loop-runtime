@@ -60,7 +60,9 @@ check('npm pack produced a tarball', existsSync(tgz), tgz);
 // from the repo's node_modules (npm install of the tarball needs network;
 // the packed dist + real deps is the honest local-install equivalent).
 const posix = p => p.replace(/\\/g, '/');
-run('tar', ['--force-local', '-xzf', posix(tgz), '-C', posix(installDir)], work);
+// Extract via a relative archive path: GNU tar treats "C:/..." as a remote
+// host spec (needing --force-local), while bsdtar does not know that flag.
+run('tar', ['-xzf', tgz.replace(/\\/g, '/').split('/').pop(), '-C', posix(installDir)], work);
 const pkgDir = join(installDir, 'package');
 try {
   run('cmd', ['/c', 'mklink', '/J', join(pkgDir, 'node_modules'), join(REPO, 'node_modules')], work);
