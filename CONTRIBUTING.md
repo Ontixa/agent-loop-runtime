@@ -4,7 +4,7 @@ Thank you for your interest in contributing! Here's how you can help:
 
 ## 🐛 Reporting Bugs
 
-- Check the [Issues](https://github.com/tang-vu/agent-loop-runtime/issues) page first
+- Check the [Issues](https://github.com/Ontixa/agent-loop-runtime/issues) page first
 - Include:
   - Node.js version (`node --version`)
   - Agent CLI + version (e.g. `qwen --version`, `codex --version`)
@@ -68,4 +68,4 @@ npx tsx --test src/__tests__/  # test suite (fake agents, no vendor CLIs needed)
 
 ## Questions?
 
-Open a [Discussion](https://github.com/tang-vu/agent-loop-runtime/discussions) or tag maintainers in issues/PRs.
+Open a [Discussion](https://github.com/Ontixa/agent-loop-runtime/discussions) or tag maintainers in issues/PRs.

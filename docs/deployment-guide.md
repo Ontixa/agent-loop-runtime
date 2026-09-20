@@ -3,7 +3,7 @@
 ## Install
 
 ```bash
-git clone https://github.com/tang-vu/agent-loop-runtime.git
+git clone https://github.com/Ontixa/agent-loop-runtime.git
 cd agent-loop-runtime
 npm install && npm run build
 npm link   # provides `agentloop`
