@@ -5,12 +5,32 @@
   "bin": {
     "agentloop": "dist/cli.js"
   },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.js.map",
+    "dist/**/*.d.ts",
+    "dist/**/*.d.ts.map",
+    "src/**/*.ts",
+    "tsconfig.json",
+    "qwen-loop.config.example.json",
+    "scripts/run-tests.mjs",
+    "scripts/e2e-runtime-recovery.mjs",
+    "scripts/demo-mission.mjs",
+    "scripts/test-demo.mjs",
+    "scripts/test-package.mjs",
+    "docs/*.md",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CONTRIBUTING.md"
+  ],
   "scripts": {
     "build": "npx tsc",
     "start": "tsx src/cli.ts",
     "dev": "tsx watch src/cli.ts",
     "test": "node scripts/run-tests.mjs",
-    "test:e2e": "node scripts/e2e-runtime-recovery.mjs"
+    "test:e2e": "node scripts/e2e-runtime-recovery.mjs",
+    "test:package": "node scripts/test-package.mjs"
   },
   "type": "module",
   "repository": {
