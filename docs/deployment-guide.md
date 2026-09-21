@@ -51,8 +51,11 @@ the array.
 Foreground (one mission):
 
 ```bash
-agentloop run "objective" --criteria "npm test passes"
+agentloop run "objective" --no-plan --criteria "npm test passes"
 ```
+
+For this first mission, `--no-plan` skips the separate model-planning call and
+uses one implementation task. It does not skip validation or review.
 
 Daemon (continuous, multi-repo):
 

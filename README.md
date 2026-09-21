@@ -75,7 +75,7 @@ agentloop doctor
 #    (see Validation gates below)
 
 # 4. Run a mission — isolated worktree, bounded, resumable
-agentloop run "Fix the date-parsing bug in src/parser.ts" --criteria "npm test passes"
+agentloop run "Fix the date-parsing bug in src/parser.ts" --no-plan --criteria "npm test passes"
 
 # 5. Inspect
 agentloop missions --all
@@ -88,6 +88,8 @@ Choose the installed, authenticated CLI you intend to use (`codex` above is an
 example). Without `--agent`, `init` defaults to Qwen; it does not automatically
 select another detected CLI. The repository needs at least one existing commit.
 `--criteria` describes acceptance but does not configure a validation command.
+This first run uses `--no-plan` to create one implementation task without a
+separate model-planning call; validation and review still run.
 
 Missions pause for human approval when policy demands it:
 
