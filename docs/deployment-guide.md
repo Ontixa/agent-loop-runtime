@@ -67,14 +67,22 @@ On start the daemon sweeps for interrupted missions: dead runners → `stale` �
 
 ## Control API (v1, loopback)
 
-`GET  /v1/health` — daemon health
+`GET  /v1/status` — daemon health
 `GET  /v1/missions` — list missions
 `GET  /v1/missions/:id` — inspect
 `POST /v1/missions` — create
 `POST /v1/missions/:id/pause | resume | cancel`
 `GET  /v1/missions/:id/events` — JSONL event stream
 
-Loopback needs no auth. If bound beyond loopback, require `AGENTLOOP_API_TOKEN` (Bearer).
+API data/control requests require bearer authentication, including loopback. Configure
+`daemon.token` or `AGENTLOOP_API_TOKEN` (an explicit credential is required for
+non-loopback binding), or let the daemon
+generate an ephemeral credential. After successful startup, operator tooling can
+read the credential from `.agentloop/daemon.json` (or `AGENTLOOP_HOME/daemon.json`).
+Never print or pass this administrative token to an agent. The status file is
+created with POSIX mode `0600`; on Windows, restrict the directory's inherited ACL
+to the operator account. This is not isolation from processes running as that user.
+Use a configured nonzero port: port-zero URL discovery is not supported yet.
 
 ## Operational runbook
 

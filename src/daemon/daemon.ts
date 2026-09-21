@@ -67,17 +67,24 @@ export class Daemon {
     // The bearer token is stored here so operator tooling (same UID) can
     // authenticate. This is NOT a boundary against agent processes running
     // as the same OS user — see docs/threat-model.md.
-    const dir = join(process.env.AGENTLOOP_HOME ?? join(process.cwd(), '.agentloop'));
-    mkdirSync(dir, { recursive: true });
-    writeJsonAtomic(join(dir, 'daemon.json'), {
-      pid: process.pid,
-      startedAt: new Date(this.startedAt).toISOString(),
-      url: this.api.url,
-      token: this.api.bearerToken,
-      repos: this.opts.repos
-    });
-
     await this.api.start();
+    try {
+      const dir = join(process.env.AGENTLOOP_HOME ?? join(process.cwd(), '.agentloop'));
+      mkdirSync(dir, { recursive: true });
+      // Restrict the temporary file from creation, before writing the bearer.
+      // Windows operators must also restrict the directory's inherited ACL.
+      writeJsonAtomic(join(dir, 'daemon.json'), {
+        pid: process.pid,
+        startedAt: new Date(this.startedAt).toISOString(),
+        url: this.api.url,
+        token: this.api.bearerToken,
+        repos: this.opts.repos
+      }, 0o600);
+    } catch (error) {
+      // Do not leave an undiscoverable listener or install timers/signals.
+      await this.api.stop();
+      throw error;
+    }
 
     this.sweepTimer = setInterval(() => void this.sweepStale(), STALE_SWEEP_MS);
     this.sweepTimer.unref();

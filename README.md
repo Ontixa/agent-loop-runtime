@@ -252,7 +252,7 @@ agentloop mcp               # MCP server over stdio
 agentloop health --json     # machine-readable runtime health
 ```
 
-The daemon recovers interrupted missions on start, enforces concurrency limits, and pauses (not kills) active missions on shutdown. The HTTP control API binds loopback only; set `AGENTLOOP_API_TOKEN` if you extend it.
+The daemon recovers interrupted missions on start, enforces concurrency limits, and pauses (not kills) active missions on shutdown. The HTTP control API defaults to loopback and always requires a bearer token. Set `AGENTLOOP_API_TOKEN`, or use the generated credential in `.agentloop/daemon.json` after startup. Treat this file as secret; see [operator authentication and file permissions](docs/deployment-guide.md#control-api-v1-loopback).
 
 MCP tools: `list_missions`, `inspect_mission`, `create_mission`, `pause_mission`, `resume_mission`, `cancel_mission`, `list_approvals`. There is deliberately no "approve as human" tool — approvals stay with the operator.
 

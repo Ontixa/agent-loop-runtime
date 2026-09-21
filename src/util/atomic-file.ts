@@ -51,7 +51,7 @@ function maybeInjectFault(op: 'write' | 'append' | 'rename', path: string): void
  * Atomically write text to a file: write to a sibling temp file, fsync it,
  * then rename over the destination.
  */
-export function writeFileAtomic(filePath: string, data: string): void {
+export function writeFileAtomic(filePath: string, data: string, mode?: number): void {
   ensureDir(dirname(filePath));
   const tmp = join(
     dirname(filePath),
@@ -60,7 +60,7 @@ export function writeFileAtomic(filePath: string, data: string): void {
   let fd: number | undefined;
   try {
     maybeInjectFault('write', filePath);
-    fd = openSync(tmp, 'w');
+    fd = openSync(tmp, 'w', mode);
     writeSync(fd, data, 0, 'utf-8');
     try { fsyncSync(fd); } catch { /* fsync unsupported (e.g. some virtual fs) — best effort */ }
     closeSync(fd);
@@ -75,8 +75,8 @@ export function writeFileAtomic(filePath: string, data: string): void {
 }
 
 /** Atomically write a JSON-serializable value. */
-export function writeJsonAtomic(filePath: string, value: unknown): void {
-  writeFileAtomic(filePath, JSON.stringify(value, null, 2));
+export function writeJsonAtomic(filePath: string, value: unknown, mode?: number): void {
+  writeFileAtomic(filePath, JSON.stringify(value, null, 2), mode);
 }
 
 /** Read + parse JSON; returns undefined if missing or unparseable. */
