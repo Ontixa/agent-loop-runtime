@@ -98,7 +98,10 @@ daemon's actual URL from the status file. IPv6 literal URLs use brackets.
 ## Upgrading from Qwen Loop
 
 ```bash
+cd <target-repository>
 agentloop migrate   # qwen-loop.config.json → agentloop.config.json (+ .bak)
 ```
 
-Legacy config is detected beside the target path (cwd or `--repo` dir), never destroyed. Qwen stays available as `{"type": "qwen"}` agent adapter.
+Migration reads the legacy config in the current working directory and preserves
+the original file. `migrate` does not accept `--repo`; change into the target
+repository first. Qwen stays available as a `{"type": "qwen"}` agent adapter.
