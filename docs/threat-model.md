@@ -11,7 +11,7 @@ claim to prevent. Nothing below is aspirational — each line maps to code or a 
 | Runtime → agent CLI | argv + scrubbed env + cwd=worktree | native/Node argv with `shell:false`; restricted literal batch transport on Windows; `AGENTLOOP_*` env stripped; bounded output, timeout, cancellation |
 | Agent → workspace | file edits inside the worktree | git worktree isolation; `protectedPaths` (`.agentloop/**`, policy/config files, `.git/**`) audited at validation time |
 | Agent → repo (git) | commits on the mission branch | `allowLocalCommit` default true; `allowPush`/`allowPullRequest` = `approval`; `allowMerge` = `never` |
-| Runner → mission state | persisted transitions | exclusive `mission.json.lock`, CAS `revision`, runner lease (pid + nonce + heartbeat); a non-owner cannot write |
+| Runner → mission state | persisted transitions | exclusive-create `mission.json.lock`, CAS `revision`, runner lease (pid + nonce + heartbeat); subject to the lock-reclamation limitations below |
 
 ## What is enforced (P0)
 
@@ -51,6 +51,30 @@ claim to prevent. Nothing below is aspirational — each line maps to code or a 
   [planning lifecycle](planning-lifecycle.md) for the additive receipt fields.
 - **No auto push/merge/publish.** Policy defaults make push/PR approval-gated
   and merge impossible; acceptance paths never invoke them.
+
+### File-lock recovery limits
+
+Lock age alone never authorizes takeover. A stale lock is eligible for automatic
+reclamation only with a valid positive-integer PID and runtime-format nonce,
+and an owner probe that specifically reports `ESRCH` (no such process).
+Live PIDs, permission/unknown probe errors and malformed owner records fail
+closed. PID reuse can conservatively prevent recovery. Persistent filesystem
+errors surface without entering the protected callback; contention retries use
+a monotonic deadline and bounded backoff. This does not put a hard deadline on
+individual blocking OS calls or on the protected callback itself.
+
+The record and file identity are reread before reclaiming a dead owner's lock.
+**This is not atomic compare-and-unlink:** concurrent reclaimers or external
+file replacement can still race that check. These filesystem locks are not
+claimed to provide race-free reclamation; CAS/lease guarantees depend on lock
+exclusion. Stronger reclamation requires a separately reviewed protocol or OS
+locking primitive. The file descriptor is closed before entering the callback;
+Windows open-handle deletion behavior is not the exclusion mechanism.
+
+A crash while creating an owner record can leave an incomplete lock that needs
+operator investigation, not age-based eviction. Before manually recovering an
+unknown lock, stop competing writers and inspect the exact lock and mission
+state. This patch adds no automatic force-unlock or new operator command.
 
 ## What is detected (not prevented)
 
