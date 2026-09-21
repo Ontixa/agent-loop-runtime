@@ -22,6 +22,7 @@ const GITIGNORE_BLOCK = [
 export async function cmdInit(opts: { agent?: string; force?: boolean }): Promise<void> {
   const cwd = process.cwd();
   const repo = await inspectRepo(cwd);
+  if (!repo.inspectionComplete) throw new Error(`Repository inspection incomplete: ${repo.inspectionError?.message}`);
   if (!repo.isRepo) {
     console.log(chalk.yellow('Warning: current directory is not a git repository.'));
     console.log('Missions require a git repo. Run `git init` first, then re-run `agentloop init`.');
@@ -99,8 +100,10 @@ export async function cmdDoctor(opts: { json?: boolean }): Promise<void> {
   const repo = await inspectRepo(process.cwd());
   checks.push({
     name: 'repository',
-    ok: repo.isRepo,
-    detail: repo.isRepo
+    ok: repo.inspectionComplete && repo.isRepo === true,
+    detail: !repo.inspectionComplete
+      ? `inspection incomplete (${repo.inspectionError?.stage}): ${repo.inspectionError?.message}`
+      : repo.isRepo
       ? `${repo.branch}${repo.dirty ? ' (dirty)' : ''}${repo.hasRemote ? ` remote=${repo.remote}` : ' no-remote'}`
       : 'not a git repository'
   });

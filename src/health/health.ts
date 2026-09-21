@@ -26,7 +26,7 @@ export interface HealthReport {
 
 export interface RepoHealth {
   path: string;
-  git: { ok: boolean; branch?: string; dirty?: boolean; detached?: boolean; error?: string };
+  git: { ok: boolean; branch?: string; dirty?: boolean | null; detached?: boolean | null; error?: string; inspectionComplete?: boolean };
   missions: {
     total: number;
     byState: Record<string, number>;
@@ -92,7 +92,9 @@ export async function collectHealth(opts: HealthOptions): Promise<HealthReport> 
 
     repos.push({
       path: repo,
-      git: git.isRepo
+      git: !git.inspectionComplete
+        ? { ok: false, inspectionComplete: false, error: `inspection incomplete (${git.inspectionError?.stage}): ${git.inspectionError?.message}` }
+        : git.isRepo
         ? { ok: true, branch: git.branch, dirty: git.dirty, detached: git.detached }
         : { ok: false, error: 'not a git repository' },
       missions: { total: missions.length, byState, stale, blockedApprovals, corrupt: corrupt.length },
@@ -100,7 +102,8 @@ export async function collectHealth(opts: HealthOptions): Promise<HealthReport> 
       throughput: { completedLast24h: completed24, failedLast24h: failed24 }
     });
 
-    if (!git.isRepo) errors.push(`${repo}: not a git repository`);
+    if (!git.inspectionComplete) errors.push(`${repo}: repository inspection incomplete (${git.inspectionError?.stage})`);
+    else if (!git.isRepo) errors.push(`${repo}: not a git repository`);
   }
 
   // Agent availability

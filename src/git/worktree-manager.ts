@@ -1,4 +1,4 @@
-import { gitStdout, gitSep } from './git-runner.js';
+import { gitStdout, gitSep, GitOutputLimitError } from './git-runner.js';
 import { existsSync } from 'fs';
 import { join, resolve } from 'path';
 import { ensureDir, writeFileAtomic } from '../util/atomic-file.js';
@@ -74,6 +74,7 @@ export async function removeMissionWorktree(
   try {
     await gitSep(args, repoRoot);
   } catch (err) {
+    if (err instanceof GitOutputLimitError) throw err;
     // If the worktree is already gone, treat as success
     if (existsSync(worktreePath)) throw err;
     logger.debug('Worktree already removed', { worktreePath });
@@ -82,7 +83,9 @@ export async function removeMissionWorktree(
   if (opts.branch && opts.keepBranch === false) {
     try {
       await gitSep(['branch', '-D', opts.branch], repoRoot);
-    } catch { /* branch may not exist */ }
+    } catch (error) {
+      if (error instanceof GitOutputLimitError) throw error;
+    }
   }
 }
 
@@ -110,7 +113,9 @@ export async function listMissionWorktrees(repoRoot: string): Promise<WorktreeIn
         current = {};
       }
     }
-  } catch { /* no worktrees */ }
+  } catch (error) {
+    if (error instanceof GitOutputLimitError) throw error;
+  }
   return out;
 }
 

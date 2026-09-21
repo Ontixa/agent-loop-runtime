@@ -35,6 +35,17 @@ const ALLOWED_SUBCOMMANDS = new Set([
 ]);
 
 const DEFAULT_TIMEOUT_MS = 60_000;
+export const MAX_GIT_OUTPUT_BYTES = 8 * 1024 * 1024;
+export interface GitOutputOptions { maxOutputBytes?: number }
+
+/** Incomplete output must never be interpreted as a successful inspection. */
+export class GitOutputLimitError extends GitError {
+  constructor(args: string[], public readonly limitBytes: number, public readonly observedBytes: number) {
+    super(`Git output exceeded aggregate limit of ${limitBytes} bytes; inspection incomplete`, args);
+    this.name = 'GitOutputLimitError';
+    Object.setPrototypeOf(this, GitOutputLimitError.prototype);
+  }
+}
 
 export interface GitRunResult {
   stdout: string;
@@ -45,14 +56,15 @@ export interface GitRunResult {
 export async function git(
   args: string[],
   cwd: string,
-  timeoutMs = DEFAULT_TIMEOUT_MS
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  output: GitOutputOptions = {}
 ): Promise<GitRunResult> {
-  return gitSep(args, cwd, timeoutMs);
+  return gitSep(args, cwd, timeoutMs, output);
 }
 
 /** Run git and return stdout trimmed; throws GitError. */
-export async function gitStdout(args: string[], cwd: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<string> {
-  const { stdout } = await gitSep(args, cwd, timeoutMs);
+export async function gitStdout(args: string[], cwd: string, timeoutMs = DEFAULT_TIMEOUT_MS, output: GitOutputOptions = {}): Promise<string> {
+  const { stdout } = await gitSep(args, cwd, timeoutMs, output);
   return stdout.trim();
 }
 
@@ -63,8 +75,13 @@ export async function gitStdout(args: string[], cwd: string, timeoutMs = DEFAULT
 export async function gitSep(
   args: string[],
   cwd: string,
-  timeoutMs = DEFAULT_TIMEOUT_MS
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  output: GitOutputOptions = {}
 ): Promise<GitRunResult> {
+  const limit = output.maxOutputBytes ?? MAX_GIT_OUTPUT_BYTES;
+  if (!Number.isSafeInteger(limit) || limit <= 0 || limit > MAX_GIT_OUTPUT_BYTES) {
+    throw new RangeError(`maxOutputBytes must be a positive safe integer <= ${MAX_GIT_OUTPUT_BYTES}`);
+  }
   const subcommand = args[0];
   // Doctor's read-only version probe is an exact exception, not permission
   // to forward arbitrary global options or appended commands.
@@ -86,24 +103,41 @@ export async function gitSep(
       return;
     }
 
-    let stdout = '';
-    let stderr = '';
+    let stdout: Buffer[] = [];
+    let stderr: Buffer[] = [];
+    let bytes = 0;
     let settled = false;
 
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      proc.kill('SIGTERM');
+      stdout = []; stderr = [];
+      try { proc.kill('SIGTERM'); } catch { /* promise still rejects and retention stays stopped */ }
       reject(new GitError(`git ${args.join(' ')} timed out after ${timeoutMs}ms`, args));
     }, timeoutMs);
 
-    proc.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
-    proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+    const retain = (stream: 'stdout' | 'stderr', d: Buffer) => {
+      if (settled) return;
+      bytes += d.length;
+      if (bytes > limit) {
+        settled = true;
+        clearTimeout(timer);
+        stdout = []; stderr = [];
+        // Only the direct Git child is signalled; no process-tree guarantee.
+        try { proc.kill('SIGTERM'); } catch { /* retention is already stopped */ }
+        reject(new GitOutputLimitError(args, limit, bytes));
+        return;
+      }
+      (stream === 'stdout' ? stdout : stderr).push(d);
+    };
+    proc.stdout?.on('data', (d: Buffer) => retain('stdout', d));
+    proc.stderr?.on('data', (d: Buffer) => retain('stderr', d));
 
     proc.on('error', (err) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      stdout = []; stderr = [];
       reject(new GitError(`git spawn failed: ${err.message}`, args));
     });
 
@@ -111,12 +145,15 @@ export async function gitSep(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      const stdoutText = Buffer.concat(stdout).toString('utf8');
+      const stderrText = Buffer.concat(stderr).toString('utf8');
+      stdout = []; stderr = [];
       if (code === 0) {
-        resolve({ stdout, stderr });
+        resolve({ stdout: stdoutText, stderr: stderrText });
       } else {
         reject(new GitError(
-          `git ${args.join(' ')} failed (exit ${code}): ${stderr.trim().slice(0, 500)}`,
-          args, code, stderr
+          `git ${args.join(' ')} failed (exit ${code}): ${stderrText.trim().slice(0, 500)}`,
+          args, code, stderrText
         ));
       }
     });
@@ -124,10 +161,11 @@ export async function gitSep(
 }
 
 /** Convenience: run git, return trimmed stdout, or null on failure. */
-export async function gitTry(args: string[], cwd: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<string | null> {
+export async function gitTry(args: string[], cwd: string, timeoutMs = DEFAULT_TIMEOUT_MS, output: GitOutputOptions = {}): Promise<string | null> {
   try {
-    return await gitStdout(args, cwd, timeoutMs);
+    return await gitStdout(args, cwd, timeoutMs, output);
   } catch (err) {
+    if (err instanceof GitOutputLimitError) throw err;
     logger.debug(`git ${args[0]} failed (non-fatal)`, {
       error: err instanceof Error ? err.message : String(err)
     });
