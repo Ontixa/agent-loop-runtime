@@ -20,9 +20,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        # Dependency floor is Node >=20.12 (commander/@inquirer engines);
-        # README's "Node 18+" predates those. Test the real floor + LTS.
-        node: ['20', '22']
+        # Retain the existing versions and cover the README's Node 24 first run.
+        node: ['20', '22', '24']
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
