@@ -85,12 +85,10 @@ export async function runValidationGates(
     }
 
     const started = Date.now();
-    const inv = toSpawnInvocation({ command: gate.argv[0], args: gate.argv.slice(1) });
+    const inv = toSpawnInvocation({ command: gate.argv[0], args: gate.argv.slice(1) }, cwd);
     const result = await supervise({
-      command: inv.command,
-      args: inv.args,
+      ...inv,
       cwd,
-      env: inv.env,
       timeoutMs: gate.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS,
       maxOutputBytes: GATE_OUTPUT_TAIL
     });

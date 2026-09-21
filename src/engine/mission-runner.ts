@@ -220,8 +220,8 @@ export class MissionRunner {
     return false;
   }
 
-  /** Enforce wall-time and invocation budgets (persisted, cumulative across resumes). */
-  private checkBudget(mission: Mission): boolean {
+  /** Wall time applies to every step; invocation limits apply before a new attempt. */
+  private checkBudget(mission: Mission, beforeInvocation = false): boolean {
     const elapsedMin = mission.usage.startedAt
       ? (Date.now() - Date.parse(mission.usage.startedAt)) / 60_000
       : 0;
@@ -232,7 +232,7 @@ export class MissionRunner {
       this.fail(mission, `budget exceeded: mission ran ${elapsedMin.toFixed(1)}m > max ${mission.budget.maxMissionMinutes}m`);
       return true;
     }
-    if (mission.usage.agentInvocations >= mission.budget.maxAgentInvocations) {
+    if (beforeInvocation && mission.usage.agentInvocations >= mission.budget.maxAgentInvocations) {
       this.fail(mission, `budget exceeded: ${mission.usage.agentInvocations} agent invocations ≥ max ${mission.budget.maxAgentInvocations}`);
       return true;
     }
@@ -274,7 +274,7 @@ export class MissionRunner {
     }
 
     for (const task of ready) {
-      if (this.checkInterrupts(mission) || this.checkBudget(mission)) return;
+      if (this.checkInterrupts(mission) || this.checkBudget(mission, true)) return;
 
       // Record the ATTEMPT before spawning: invocation id, intent, task→running.
       // The attempt consumes budget even if the runner dies mid-flight.
@@ -467,6 +467,7 @@ export class MissionRunner {
 
   /** REPAIRING: run one repair pass with feedback, then re-validate. */
   private async stepRepair(mission: Mission): Promise<void> {
+    if (this.checkBudget(mission, true)) return;
     const lastPass = mission.passes.at(-1);
     const feedback = this.buildRepairPrompt(mission, lastPass);
     const invocationId = `inv_${randomBytes(6).toString('hex')}`;
@@ -513,8 +514,18 @@ export class MissionRunner {
 
     if (result.exitKind === 'cancelled') {
       this.store.mutate(mission.id, m => {
+        const t = m.tasks.find(x => x.id === repairTaskId);
+        if (t) {
+          t.status = TaskStatus.CANCELLED;
+          t.completedAt = new Date().toISOString();
+          t.result = result.exitKind;
+        }
         const p = m.passes.at(-1);
-        if (p && p.agentInvocationId === invocationId) { p.finishedAt = new Date().toISOString(); p.note = 'cancelled'; }
+        if (p && p.agentInvocationId === invocationId) {
+          p.finishedAt = new Date().toISOString();
+          p.agentExit = result.exitKind;
+          p.note = 'cancelled';
+        }
       });
       this.store.transition(mission, MissionState.CANCELLED, 'repair cancelled');
       this.finalizeOutcome(mission.id, 'cancelled', 'Repair pass cancelled');
@@ -524,9 +535,11 @@ export class MissionRunner {
     this.store.mutate(mission.id, m => {
       const t = m.tasks.find(x => x.id === repairTaskId);
       if (t) {
-        t.status = result.exitKind === 'spawn-error' ? TaskStatus.FAILED : TaskStatus.COMPLETED;
+        t.status = result.exitKind === 'success' ? TaskStatus.COMPLETED : TaskStatus.FAILED;
         t.completedAt = new Date().toISOString();
         t.result = result.exitKind;
+        t.outputSummary = boundTail(result.outputTail, 2 * 1024).text;
+        if (result.exitKind === 'spawn-error') t.error = result.outputTail.slice(0, 500);
       }
       const p = m.passes.at(-1);
       if (p && p.agentInvocationId === invocationId) {
@@ -636,13 +649,11 @@ export class MissionRunner {
       logFile
     };
 
-    const inv = toSpawnInvocation(adapter.buildInvocation(ctx, mission.agent));
+    const inv = toSpawnInvocation(adapter.buildInvocation(ctx, mission.agent), ctx.cwd);
 
     const result = await supervise({
-      command: inv.command,
-      args: inv.args,
+      ...inv,
       cwd: ctx.cwd,
-      env: inv.env,
       timeoutMs: ctx.timeoutMs,
       maxOutputBytes: ctx.maxOutputBytes,
       logFile,

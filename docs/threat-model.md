@@ -8,7 +8,7 @@ claim to prevent. Nothing below is aspirational — each line maps to code or a 
 | Boundary | What crosses it | Enforcement |
 |---|---|---|
 | Operator → runtime | CLI/API/MCP commands, approval decisions | daemon API: bearer token (auto-generated per-daemon when not configured), `Host` allowlist, CORS off by default (`daemon.corsOrigins` opt-in), loopback-only default bind |
-| Runtime → agent CLI | argv + scrubbed env + cwd=worktree | `shell:false` argv-only spawn, `AGENTLOOP_*` env stripped, bounded output, timeout, cancellation |
+| Runtime → agent CLI | argv + scrubbed env + cwd=worktree | native/Node argv with `shell:false`; restricted literal batch transport on Windows; `AGENTLOOP_*` env stripped; bounded output, timeout, cancellation |
 | Agent → workspace | file edits inside the worktree | git worktree isolation; `protectedPaths` (`.agentloop/**`, policy/config files, `.git/**`) audited at validation time |
 | Agent → repo (git) | commits on the mission branch | `allowLocalCommit` default true; `allowPush`/`allowPullRequest` = `approval`; `allowMerge` = `never` |
 | Runner → mission state | persisted transitions | exclusive `mission.json.lock`, CAS `revision`, runner lease (pid + nonce + heartbeat); a non-owner cannot write |
@@ -40,8 +40,9 @@ claim to prevent. Nothing below is aspirational — each line maps to code or a 
   `--in-place` and `--approve-in-place` are required (enforced in
   `createMission`, not just the CLI).
 - **Budgets are cumulative across resume.** `usage.agentInvocations`,
-  `repairPasses`, and wall time are persisted and checked before every step —
-  a crash does not reset spend. Approval wait time is tracked separately
+  `repairPasses`, and wall time are persisted. Invocation limits gate new
+  attempts, not validation of the last permitted attempt; wall time is checked
+  between steps. A crash does not reset spend. Approval wait time is tracked separately
   (`approvalWaitMs`) and reported.
 - **No auto push/merge/publish.** Policy defaults make push/PR approval-gated
   and merge impossible; acceptance paths never invoke them.
@@ -69,5 +70,11 @@ claim to prevent. Nothing below is aspirational — each line maps to code or a 
   work" and "recorded the outcome" is marked `interrupted` and retried with a
   partial-work warning — never deduped away.
 - Sandbox-level isolation (see above).
+- Arbitrary batch-file argument fidelity. Current canonical npm Node shims bypass
+  `cmd.exe` and preserve arbitrary argv. Unknown batch wrappers may reinterpret
+  arguments internally; the runtime rejects quotes, control characters and shell
+  metacharacters for that transport. Use a native executable or explicit Node
+  entry point for agent prompts. The batch file itself remains trusted executable
+  code, not a security boundary.
 - Defense against a malicious operator (approvals trust the configured
   `AGENTLOOP_APPROVAL_KEY` holder and local file permissions).

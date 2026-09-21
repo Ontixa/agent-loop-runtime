@@ -12,13 +12,14 @@ import type { AgentExitKind } from '../types.js';
  * Every child process in the runtime (agents, validation gates, git helpers
  * that can't use the fast path) goes through here. Guarantees:
  *
- * - argv execution only — `shell: false` always, so no shell injection
+ * - `shell: false` always; explicit batch transport accepts restricted literals
  * - bounded in-memory output (ring tail), full output streamed to a size-
  *   limited log file instead of RAM
  * - timeouts enforced with process-tree kill (Windows: immediate
  *   TerminateProcess on the child + taskkill /T tree sweep; POSIX: process-
  *   group kill)
  * - cooperative cancellation via AbortSignal
+ * - stdin is closed: prompts arrive through argv, never an unattended pipe
  * - no zombie processes: 'close' awaited, stdio destroyed
  * - runtime-internal env (AGENTLOOP_*) is stripped from the child
  */
@@ -28,6 +29,8 @@ export interface SupervisedProcessOptions {
   args: string[];
   cwd?: string;
   env?: Record<string, string>;
+  /** Forward only an already-prepared Windows invocation's transport flag. */
+  windowsVerbatimArguments?: boolean;
   timeoutMs: number;
   /** Bytes of combined output kept in memory for the result tail */
   maxOutputBytes?: number;
@@ -140,8 +143,12 @@ export function supervise(opts: SupervisedProcessOptions): Promise<SupervisedRes
       child = spawn(opts.command, opts.args, {
         cwd: opts.cwd,
         env: childEnv(opts.env),
+        // The public API supplies no stdin payload or interactive channel.
+        // An unused pipe stays open forever for CLIs that read until EOF.
+        stdio: ['ignore', 'pipe', 'pipe'],
         shell: false, // hard rule: argv only, never a shell
         windowsHide: true,
+        windowsVerbatimArguments: opts.windowsVerbatimArguments,
         detached: process.platform !== 'win32' // process group for POSIX kill
       });
     } catch (err) {

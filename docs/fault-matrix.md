@@ -27,6 +27,25 @@ Each row was exercised by an automated test (`npm test` /
 | Daemon restart with shutdown-paused mission | auto-resumed (reason starts with `shutdown`) | ✔ | — | scheduler requeue logic |
 | Two missions in same repo | `maxConcurrentMissionsPerRepo` serialized | ✔ | — | scheduler tests |
 
+## Windows transport and invocation admission
+
+These regressions were also executed on Windows with Node 24.14.1:
+
+| Condition | Verified behavior | Test |
+|---|---|---|
+| Canonical npm shim with spaced path, multiline prompt, quotes and shell characters | Direct Node transport preserves argv; no injected command executes | windows-invocation |
+| Unknown batch wrapper receives shell-sensitive input | Reject before spawn; ordinary restricted literals still work | windows-invocation |
+| Child waits for asynchronous or synchronous stdin EOF | Receives empty stdin and terminates; stdout/stderr remain captured | process-supervisor > non-interactive stdin |
+| Last permitted agent invocation succeeds | Its real validation gate still runs and the mission can complete | mission-runner > invocation budget admission |
+| Another task or repair would exceed the invocation cap | No extra agent invocation starts | mission-runner > invocation budget admission |
+| Repair exits nonzero or times out after writing valid output | Repair task remains failed; independent content validation may still accept the resulting work | mission-runner > repair task outcome honesty |
+| Operator cancels a spawned repair | Mission and repair task are cancelled, with finish time and exit evidence; no running task remains | mission-runner > repair task outcome honesty |
+
+These checks do not establish live vendor readiness. The local Codex smoke
+reached its file-editing tool but failed to write; a separate sandbox diagnostic
+reported setup-refresh errors. Devin refused an untrusted disposable worktree.
+Both content gates remained authoritative; neither failure was bypassed.
+
 ## Known limits (honest)
 
 - **Orphan sweep start-time check** uses `wmic`/`ps` start-time strings where

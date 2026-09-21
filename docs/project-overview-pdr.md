@@ -15,7 +15,7 @@ A Mission has: objective, acceptance criteria, non-goals, repository + base SHA,
 | Layer | Tool |
 |---|---|
 | Execution engine (this product) | Agent Loop Runtime — missions, worktrees, policy, recovery, daemon |
-| Human cockpit | AI CLI Editor — consumes mission status/events over the local control API |
+| Separate terminal UI | AI CLI Editor — runtime mission status/event integration is not implemented yet |
 
 The runtime is vendor-neutral: agent adapters are plugins behind a contract; no vendor concept leaks into the scheduler or mission model.
 
@@ -23,10 +23,10 @@ The runtime is vendor-neutral: agent adapters are plugins behind a contract; no 
 
 1. **No false completion** — empty task graphs fail; failed agent invocations fail tasks; only configured validation gates + review decide success.
 2. **No silent remote mutation** — push/PR/merge require policy mode + explicit approval. Never force-push.
-3. **No shell execution** — all processes spawn argv-only. Agent output never becomes a command.
+3. **Explicit process arguments** — native/Node processes receive argv; Windows batch wrappers use restricted literal transport. Agent output never becomes a command.
 4. **Crash-safe** — atomic mission persistence; interrupted missions become `stale` and are recoverable, never assumed done.
 5. **Bounded** — wall-time, agent invocations, repair passes, output, concurrency. Expired budgets → `blocked`/`failed`.
-6. **Human gates are real** — approvals persist to disk, survive crashes, are sticky per-mission, and cannot be fabricated by agents or MCP tools.
+6. **Explicit approval evidence** — decisions persist across crashes and bind exact commands. Set `AGENTLOOP_APPROVAL_KEY` for integrity verification; unsigned local files alone do not prove a human decision. MCP does not expose approval as an agent tool.
 
 ## Non-goals
 

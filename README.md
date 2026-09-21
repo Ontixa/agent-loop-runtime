@@ -13,19 +13,21 @@ Run Codex, Claude Code, Devin, Gemini CLI, Qwen Code, OpenCode, Aider, or any co
 | | |
 |---|---|
 | **Agent Loop Runtime** | Headless execution engine — missions, worktrees, policy, recovery |
-| **AI CLI Editor** | Human-facing cockpit/control surface — consumes the runtime's machine-readable mission status and events |
+| **AI CLI Editor** | Separate terminal-session UI; runtime mission integration is not implemented yet |
 
 ## Install
 
 ```bash
 git clone https://github.com/Ontixa/agent-loop-runtime.git
 cd agent-loop-runtime
-npm install
+npm ci
 npm run build
 npm link        # puts `agentloop` on PATH
 ```
 
-Requires Node.js 18+ and Git. Windows (PowerShell, Git for Windows) is a first-class target — no WSL needed.
+Use Node.js 24.14.1 (the locally verified version) and Git. Node 18 is not
+compatible with the locked dependency requirements. Windows (PowerShell, Git for
+Windows) is supported without WSL; vendor CLI sandbox/trust setup is separate.
 
 ## Quick start
 
@@ -81,8 +83,8 @@ State is persisted under `.agentloop/missions/<id>/` (`mission.json` CAS + `miss
 
 - **Worktree isolation by default** — each mission runs in `.agentloop/worktrees/<id>` on branch `agentloop/<id>`. In-place mode requires explicit `--in-place --approve-in-place`.
 - **No unconditional push** — local checkpoint commits are configurable; push/PR/merge are policy-gated and require approval. Never force-push, never rewrite protected branches.
-- **No shell execution** — agents, git, and validation commands spawn via explicit argv. No `shell: true`, no free-form command text from agent output.
-- **Deterministic policy** — `agentloop.policy.json` decides what runs, what needs approval, and what is refused. Agents cannot modify their own policy.
+- **Explicit process arguments** — no `shell: true` or free-form command text from agent output. Native/Node processes receive argv; the restricted Windows batch transport is described below.
+- **Deterministic runtime policy** — `agentloop.policy.json` governs runtime-invoked actions. It does not intercept commands executed internally by an agent or prevent that process from writing files; review and integrity checks detect specific violations. See the threat model before unattended use.
 - **Bounded everything** — mission wall-time, agent invocations, repair passes, output buffers, log files, concurrency. Limits expire to `blocked`/`failed`, never to infinity.
 - **Secret hygiene** — known token patterns are redacted from logs and events; `AGENTLOOP_*` runtime internals are scrubbed from agent child environments.
 - **Approvals are exact** — a decision binds to the mission, the exact argv, the policy fingerprint, and the worktree. Approving `["node","-e"]` does not cover longer commands. Set `AGENTLOOP_APPROVAL_KEY` to require HMAC-signed decisions.
@@ -144,6 +146,38 @@ Gates are classified against policy before execution:
 | Gemini CLI | adapter shipped (contract-tested; no live smoke on this machine) |
 | Aider | adapter shipped (contract-tested; no live smoke on this machine) |
 | Custom argv | contract-tested + e2e-verified — any CLI agent |
+
+Codex uses `exec --sandbox workspace-write` instead of the legacy
+`--full-auto` alias, which is absent from Codex CLI `0.155.1` help.
+The sandbox stays enabled. Live Windows execution still depends on a
+working Codex sandbox installation; adapter contract tests do not verify it.
+
+Devin uses `--print <prompt> --permission-mode accept-edits` for one
+non-interactive turn, with optional `--model`. These flags were checked
+against Devin CLI `3000.10.31` help; this is not a live authenticated
+mission verification. Workspace trust remains enabled: trust the mission
+worktree through Devin before running there, or provide an explicit
+operator-chosen `args` override. Actions beyond workspace edits remain
+subject to Devin's permission checks and may fail in non-interactive mode.
+
+Children receive closed stdin: prompts are passed in argv, not through an
+interactive terminal. Configure each CLI for non-interactive operation. An
+installed executable or passing `doctor` check does not prove it can edit a
+mission worktree. Test a small disposable mission with a real content gate first;
+inspect its agent log if sandbox setup or workspace trust fails. Do not disable
+those controls to turn a failed check into a success.
+
+On Windows, current npm-generated Node `.cmd` launchers are resolved to their
+JavaScript entry point and invoked directly with Node. This preserves multiline
+prompts, quotes and shell characters as literal arguments. The shim's adjacent
+`node.exe` is used when present, otherwise the runtime's Node executable is used.
+Bare CLI names are resolved from PATH; explicitly relative commands resolve from
+the mission worktree. Other `.cmd`/`.bat` wrappers support only literal single-line
+arguments without quotes, control characters or shell metacharacters. Configure a
+native executable or a custom `node` plus entry-point argv for arbitrary prompts;
+unknown batch wrappers are not silently reinterpreted as Node programs.
+See [Node's Windows batch-file execution documentation](https://nodejs.org/api/child_process.html#spawning-bat-and-cmd-files-on-windows)
+for why `.cmd` files need a different transport from native executables.
 
 Custom agents use argv templates with validated placeholders — never shell strings:
 

@@ -8,10 +8,10 @@ import type { AgentConfig, AgentInvocation, AgentInvocationContext } from '../ty
  * its CLI. The default argv template can be replaced wholesale via
  * `config.args` ({prompt} placeholder) or extended via `config.additionalArgs`.
  *
- * Autonomy flags (--yolo, --full-auto, --dangerously-skip-permissions, etc.)
- * are required for headless operation — the runtime's policy, worktree
- * isolation, validation gates and approval model provide the safety boundary,
- * not the agent's own interactive prompts.
+ * Defaults select each vendor's non-interactive mode and permission model.
+ * Codex retains its workspace sandbox; Devin permits workspace edits while
+ * retaining trust checks. Some other adapters use vendor autonomy flags.
+ * Runtime policy and validation do not sandbox agent child processes.
  */
 
 function mergeArgs(defaults: string[], config: AgentConfig, ctx: AgentInvocationContext): string[] {
@@ -44,7 +44,7 @@ export class CodexAdapter extends CliAdapterBase {
   buildInvocation(ctx: AgentInvocationContext, config: AgentConfig): AgentInvocation {
     const args = config.args
       ? mergeArgs([], config, ctx)
-      : mergeArgs(['exec', '--full-auto', '--skip-git-repo-check', ctx.prompt], config, ctx);
+      : mergeArgs(['exec', '--sandbox', 'workspace-write', '--skip-git-repo-check', ctx.prompt], config, ctx);
     if (config.model) args.push('-m', config.model);
     return { command: config.command ?? 'codex', args };
   }
@@ -66,9 +66,9 @@ export class ClaudeAdapter extends CliAdapterBase {
 }
 
 /**
- * Devin CLI — interactive TUI by default; headless support is experimental.
- * Invocation is best-effort: `devin "<prompt>"`. Marked experimental — use
- * fixtures for contract tests.
+ * Devin CLI — print mode exits after one non-interactive turn.
+ * Accept workspace edits, but retain Devin's checks for other tool actions
+ * and workspace trust. Operators can supply explicit argv overrides.
  */
 export class DevinAdapter extends CliAdapterBase {
   readonly type = 'devin';
@@ -78,7 +78,8 @@ export class DevinAdapter extends CliAdapterBase {
   buildInvocation(ctx: AgentInvocationContext, config: AgentConfig): AgentInvocation {
     const args = config.args
       ? mergeArgs([], config, ctx)
-      : mergeArgs([ctx.prompt], config, ctx);
+      : mergeArgs(['--print', ctx.prompt, '--permission-mode', 'accept-edits'], config, ctx);
+    if (config.model) args.push('--model', config.model);
     return { command: config.command ?? 'devin', args };
   }
 }
