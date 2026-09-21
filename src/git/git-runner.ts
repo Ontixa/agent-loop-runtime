@@ -66,7 +66,10 @@ export async function gitSep(
   timeoutMs = DEFAULT_TIMEOUT_MS
 ): Promise<GitRunResult> {
   const subcommand = args[0];
-  if (!subcommand || !ALLOWED_SUBCOMMANDS.has(subcommand)) {
+  // Doctor's read-only version probe is an exact exception, not permission
+  // to forward arbitrary global options or appended commands.
+  const versionProbe = args.length === 1 && subcommand === '--version';
+  if (!versionProbe && (!subcommand || !ALLOWED_SUBCOMMANDS.has(subcommand))) {
     throw new GitError(
       `Disallowed git subcommand: "${subcommand ?? ''}". Allowed: ${[...ALLOWED_SUBCOMMANDS].join(', ')}`,
       args
