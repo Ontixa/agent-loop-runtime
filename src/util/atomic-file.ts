@@ -4,6 +4,7 @@ import {
 } from 'fs';
 import { join, dirname } from 'path';
 import { randomBytes } from 'crypto';
+import { performance } from 'node:perf_hooks';
 
 /**
  * Atomic file utilities.
@@ -13,9 +14,9 @@ import { randomBytes } from 'crypto';
  * atomic on both NTFS and POSIX filesystems.
  *
  * Cross-process mutation is serialized by a sibling lock file (created with
- * the exclusive 'wx' flag). A lock whose owner pid is dead — or that has
- * outlived a hard age bound — is treated as stale and broken. This gives the
- * store compare-and-swap semantics on plain filesystems, Windows included.
+ * the exclusive 'wx' flag). Stale locks are reclaimable only when a valid
+ * owner record's PID is reported absent. Unknown ownership fails closed.
+ * Reclamation still has a filesystem check/unlink race; see the threat model.
  */
 
 /** Ensure a directory exists (recursive). */
@@ -141,23 +142,31 @@ export class LockTimeoutError extends Error {
 
 interface LockContent { pid: number; nonce: string; at: string }
 
-function pidLikelyAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+function deadOwner(raw: string): boolean {
+  try {
+    const holder = JSON.parse(raw) as Partial<LockContent> | null;
+    if (!holder || !Number.isSafeInteger(holder.pid) || holder.pid! <= 0 ||
+        typeof holder.nonce !== 'string' || !/^[a-f0-9]{16}$/i.test(holder.nonce)) return false;
+    try { process.kill(holder.pid!, 0); return false; }
+    catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH'; }
+  } catch { return false; }
 }
 
 /**
- * Acquire an exclusive lock file. Retries on contention; breaks locks left
- * behind by dead owners (pid check) or absurdly old locks (age bound) so a
- * crashed writer cannot wedge a mission forever. On Windows an unlink of a
- * file still held open fails with EPERM, which incidentally prevents breaking
- * a live holder's lock.
+ * Acquire with exclusive creation. Age permits checking a dead owner, never
+ * overriding a live/unknown one. Descriptors are closed before the callback;
+ * exclusion does not rely on Windows open-handle deletion behavior. Identity
+ * rereads reduce (but cannot eliminate) concurrent reclamation's unlink race.
  */
 function acquireLock(lockPath: string, timeoutMs: number, staleMs: number): LockContent {
   ensureDir(dirname(lockPath));
   const me: LockContent = { pid: process.pid, nonce: randomBytes(8).toString('hex'), at: new Date().toISOString() };
-  const deadline = Date.now() + timeoutMs;
+  const deadline = performance.now() + timeoutMs;
+  let firstAttempt = true;
 
   for (;;) {
+    if (!firstAttempt && performance.now() >= deadline) throw new LockTimeoutError(lockPath);
+    firstAttempt = false;
     try {
       const fd = openSync(lockPath, 'wx');
       try { writeSync(fd, JSON.stringify(me)); } finally { closeSync(fd); }
@@ -166,26 +175,32 @@ function acquireLock(lockPath: string, timeoutMs: number, staleMs: number): Lock
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'EEXIST') throw err;
 
-      // Contended — decide whether the holder is stale.
+      // Contended: malformed records and permission/probe uncertainty never
+      // authorize deletion. Every retry reaches the common bounded backoff.
       try {
         const st = statSync(lockPath);
         const ageMs = Date.now() - st.mtimeMs;
-        let holderDead = false;
         if (ageMs > staleMs) {
-          try {
-            const holder = JSON.parse(readFileSync(lockPath, 'utf-8')) as LockContent;
-            holderDead = typeof holder.pid === 'number' && !pidLikelyAlive(holder.pid);
-          } catch { holderDead = true; /* unreadable lock → treat as broken */ }
+          const raw = readFileSync(lockPath, 'utf-8');
+          if (deadOwner(raw)) {
+            const latest = readFileSync(lockPath, 'utf-8');
+            const current = statSync(lockPath);
+            if (latest === raw && st.dev === current.dev && st.ino === current.ino &&
+                st.size === current.size && st.mtimeMs === current.mtimeMs && st.ctimeMs === current.ctimeMs &&
+                performance.now() < deadline) {
+              unlinkSync(lockPath);
+            }
+          }
         }
-        if (holderDead || ageMs > staleMs * 4) {
-          try { unlinkSync(lockPath); } catch { /* live holder on Windows → EPERM → keep waiting */ }
-          continue;
-        }
-      } catch { /* lock vanished between checks → retry immediately */ continue; }
+      } catch (error) {
+        // A vanished candidate is normal contention; persistent filesystem
+        // failures surface immediately instead of silently retrying forever.
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
 
-      if (Date.now() > deadline) throw new LockTimeoutError(lockPath);
-      const until = Date.now() + 25;
-      while (Date.now() < until) { /* spin — locks are held for milliseconds */ }
+      if (performance.now() >= deadline) throw new LockTimeoutError(lockPath);
+      const until = Math.min(deadline, performance.now() + 25);
+      while (performance.now() < until) { /* synchronous short critical-section contention */ }
     }
   }
 }
@@ -210,7 +225,12 @@ export interface FileLockOptions {
  * agent invocations or sleeps.
  */
 export function withFileLock<T>(lockPath: string, fn: () => T, opts: FileLockOptions = {}): T {
-  const me = acquireLock(lockPath, opts.timeoutMs ?? 10_000, opts.staleMs ?? 30_000);
+  const timeoutMs = opts.timeoutMs ?? 10_000;
+  const staleMs = opts.staleMs ?? 30_000;
+  if (![timeoutMs, staleMs].every(value => Number.isFinite(value) && value >= 0)) {
+    throw new RangeError('Lock timeoutMs and staleMs must be finite nonnegative numbers');
+  }
+  const me = acquireLock(lockPath, timeoutMs, staleMs);
   try {
     return fn();
   } finally {
