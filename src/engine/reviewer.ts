@@ -1,5 +1,5 @@
 import { gitStdout, GitOutputLimitError } from '../git/git-runner.js';
-import { changedFiles, diffSummary } from '../git/repo-inspector.js';
+import { changedFilesStrict, diffSummary } from '../git/repo-inspector.js';
 import { isProtectedPath } from '../policy/command-safety.js';
 import type { Mission, ReviewResult } from '../types.js';
 import { redactSecrets } from '../util/redact.js';
@@ -37,7 +37,7 @@ export async function deterministicReview(input: DeterministicReviewInput): Prom
   const policy = mission.policy;
 
   try {
-    const files = await changedFiles(worktreePath, baseSha);
+    const files = await changedFilesStrict(worktreePath, baseSha);
 
     // Protected paths — hard violation
     const protectedHits = files.filter(f => isProtectedPath(f, policy.protectedPaths));

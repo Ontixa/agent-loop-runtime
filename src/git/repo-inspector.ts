@@ -1,4 +1,4 @@
-import { gitStdout, gitSep, GitOutputLimitError, type GitOutputOptions } from './git-runner.js';
+import { gitStdout, gitSep, GitError, GitOutputLimitError, type GitOutputOptions } from './git-runner.js';
 import { existsSync } from 'fs';
 import { resolve, sep } from 'path';
 
@@ -226,7 +226,18 @@ export async function diffSummary(repoRoot: string, baseSha: string, ref = 'HEAD
   }
 }
 
-/** List files changed between baseSha and ref (bounded). */
+/** Complete textual path list for hard review; failures are never an empty success. */
+export async function changedFilesStrict(repoRoot: string, baseSha: string, ref = 'HEAD'): Promise<string[]> {
+  const args = ['diff', '--name-only', '-z', '--no-renames', baseSha, ref, '--'];
+  const { stdout } = await gitSep(args, repoRoot);
+  if (stdout === '') return [];
+  if (!stdout.endsWith('\0')) throw new GitError('Incomplete Git path-list framing', args);
+  const paths = stdout.slice(0, -1).split('\0');
+  if (paths.some(path => path === '')) throw new GitError('Invalid empty Git path record', args);
+  return paths;
+}
+
+/** Display-oriented bounded list. Do not use for hard review or authorization. */
 export async function changedFiles(repoRoot: string, baseSha: string, ref = 'HEAD', max = 500): Promise<string[]> {
   try {
     const out = await gitStdout(['diff', '--name-only', baseSha, ref], repoRoot);
