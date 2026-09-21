@@ -29,6 +29,12 @@ Use Node.js 24.14.1 (the locally verified version) and Git. Node 18 is not
 compatible with the locked dependency requirements. Windows (PowerShell, Git for
 Windows) is supported without WSL; vendor CLI sandbox/trust setup is separate.
 
+Package contents are explicitly allowlisted: executable/library output, source
+and maps, legal/security documents, documentation and supported scripts/examples.
+After building, run `npm run test:package` to verify inventory and exercise the
+unpacked module, CLI and provider-free demo. See [package boundary](docs/package-boundary.md)
+for the intentional contents and verification limits.
+
 ## Try a mission without an AI account
 
 After building from source, run:
