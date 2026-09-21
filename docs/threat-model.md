@@ -44,6 +44,11 @@ claim to prevent. Nothing below is aspirational — each line maps to code or a 
   attempts, not validation of the last permitted attempt; wall time is checked
   between steps. A crash does not reset spend. Approval wait time is tracked separately
   (`approvalWaitMs`) and reported.
+  Planning is a counted `plan` attempt under the runner lease, after repository
+  preflight/workspace preparation. Its timeout also respects the remaining wall
+  budget. Interrupted planning keeps unknown/interrupted evidence and resolves to
+  deterministic fallback without another planner call; see
+  [planning lifecycle](planning-lifecycle.md) for the additive receipt fields.
 - **No auto push/merge/publish.** Policy defaults make push/PR approval-gated
   and merge impossible; acceptance paths never invoke them.
 

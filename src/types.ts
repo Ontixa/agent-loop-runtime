@@ -230,14 +230,14 @@ export interface ReviewResult {
   at: string;
 }
 
-/** One execute→validate→review→repair cycle */
+/** One counted agent attempt: planning, execution, or repair. */
 export interface MissionPass {
   n: number;
-  kind: 'execute' | 'repair';
+  kind: 'plan' | 'execute' | 'repair';
   /** Unique id of the agent attempt, recorded BEFORE spawn */
   agentInvocationId?: string;
   /** What the attempt set out to do — recorded before spawn */
-  intent?: { taskId?: string; kind: 'execute' | 'repair' };
+  intent?: { taskId?: string; kind: 'plan' | 'execute' | 'repair' };
   /** Pid of the spawned agent process (used for orphan detection on recovery) */
   agentPid?: number;
   startedAt: string;
@@ -340,6 +340,12 @@ export interface Mission {
   stateHistory: Array<{ state: MissionState; at: string; reason?: string; opId?: string }>;
   tasks: TaskNode[];
   passes: MissionPass[];
+  /** Absent on legacy/preplanned missions. Interrupted planning never auto-retries. */
+  planning?: {
+    status: 'pending' | 'running' | 'resolved' | 'cancelled';
+    source?: 'agent' | 'fallback';
+    error?: string;
+  };
   approvals: ApprovalRequest[];
   checkpoints: Checkpoint[];
   usage: MissionUsage;

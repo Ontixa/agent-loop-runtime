@@ -42,6 +42,7 @@ export interface MissionReceipt {
     name: string;
     model?: string;
   };
+  planning?: Mission['planning'];
   tasks: Array<{
     id: string;
     title: string;
@@ -56,7 +57,8 @@ export interface MissionReceipt {
     n: number;
     kind: string;
     agentInvocationId?: string;
-    intent?: { taskId?: string; kind: 'execute' | 'repair' };
+    intent?: { taskId?: string; kind: 'plan' | 'execute' | 'repair' };
+    note?: string;
     agentExit?: string;
     interrupted?: boolean;
     gates?: GateResult[];
@@ -81,6 +83,7 @@ export interface MissionReceipt {
 /** Build a receipt object from a mission. */
 export function buildReceipt(mission: Mission): MissionReceipt {
   return {
+    ...(mission.planning ? { planning: mission.planning } : {}),
     schemaVersion: 1,
     receiptFormat: 'agentloop/mission-receipt',
     generatedAt: new Date().toISOString(),
@@ -122,6 +125,7 @@ export function buildReceipt(mission: Mission): MissionReceipt {
       kind: p.kind,
       agentInvocationId: p.agentInvocationId,
       intent: p.intent,
+      note: p.note,
       agentExit: p.agentExit,
       interrupted: p.interrupted || undefined,
       gates: p.gates,

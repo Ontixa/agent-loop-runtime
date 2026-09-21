@@ -4,9 +4,8 @@ import { MissionStore } from '../mission/mission-store.js';
 import { createMission, prepareMission } from '../engine/mission-factory.js';
 import { MissionRunner } from '../engine/mission-runner.js';
 import { recoverMission } from '../engine/recovery.js';
-import { planWithAgent, defaultPlan, maintenancePlan } from '../engine/planner.js';
+import { defaultPlan, maintenancePlan } from '../engine/planner.js';
 import { decideApproval, loadApprovals } from '../policy/approvals.js';
-import { getAdapter } from '../agents/registry.js';
 import { loadPolicy } from '../policy/policy.js';
 import { ConfigManager } from '../config/config-manager.js';
 import { isTerminal } from '../mission/state-machine.js';
@@ -84,6 +83,7 @@ export async function cmdRun(objective: string, opts: {
   const mission = createMission({
     repoPath, spec, agent,
     kind: opts.maintenance ? 'maintenance' : 'objective',
+    planning: opts.plan !== false && !opts.maintenance,
     workspaceMode: opts.inPlace ? 'in-place' : 'worktree',
     inPlaceApproved: opts.approveInPlace === true,
     budget: opts.maxMinutes ? { maxMissionMinutes: opts.maxMinutes } : undefined
@@ -92,22 +92,13 @@ export async function cmdRun(objective: string, opts: {
   console.log(`Mission ${chalk.cyan(mission.id)} created`);
   if (opts.inPlace) console.log(chalk.yellow('In-place mode: running against the working tree (no worktree isolation).'));
 
-  // Plan → prepare → run (foreground)
+  // Preflight and allocate the workspace before any agent process is launched.
+  // Agent planning is persisted and budgeted by the runner, under its lease.
   let plannerTasks;
   if (opts.plan === false) {
     plannerTasks = defaultPlan();
   } else if (opts.maintenance) {
     plannerTasks = maintenancePlan(mission, { hasTests: true, hasDocs: true, largeFiles: [] });
-  } else {
-    try {
-      const adapter = getAdapter(String(agent.type), agent);
-      const plan = await planWithAgent(mission, adapter);
-      plannerTasks = plan.tasks;
-      console.log(`Planner produced ${plannerTasks.length} task(s) [${plan.source}]`);
-    } catch {
-      plannerTasks = defaultPlan();
-      console.log('Planner unavailable — using default single-pass plan');
-    }
   }
 
   try {

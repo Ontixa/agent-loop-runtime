@@ -6,6 +6,7 @@ import { isActiveState } from '../mission/state-machine.js';
 import type { Mission } from '../types.js';
 import { loadApprovals, saveApprovals } from '../policy/approvals.js';
 import { logger } from '../logger.js';
+import { interruptPlanning } from './planner.js';
 
 /**
  * Crash recovery.
@@ -192,6 +193,7 @@ export async function recoverMission(store: MissionStore, missionId: string): Pr
         interruptedPasses.push(p.n);
       }
     }
+    interruptPlanning(fresh, 'interrupted: planner outcome unknown; deterministic fallback, no planner retry');
   });
 
   // ── audit: reap orphaned agent processes we recorded ──────────────────

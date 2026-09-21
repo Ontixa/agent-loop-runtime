@@ -1,9 +1,6 @@
-import type { Mission, TaskNode, AgentAdapter, AgentInvocationContext } from '../types.js';
+import type { Mission, TaskNode, AgentInvocationResult } from '../types.js';
 import { TaskStatus } from '../types.js';
 import { validateTaskGraph, taskId, readyTasks } from './task-graph.js';
-import { supervise } from '../supervisor/process-supervisor.js';
-import { toSpawnInvocation } from '../agents/cli-adapter-base.js';
-import { logger } from '../logger.js';
 
 /**
  * Planner — converts a mission spec into an executable task DAG.
@@ -15,7 +12,14 @@ import { logger } from '../logger.js';
  */
 
 const MAX_PLAN_TASKS = 12;
-const PLANNER_TIMEOUT_MS = 120_000;
+export const PLANNER_TIMEOUT_MS = 120_000;
+
+/** Zero means no launch is permitted; evaluate immediately before spawn. */
+export function planningTimeoutMs(mission: Mission, now = Date.now()): number {
+  const remaining = mission.budget.maxMissionMinutes * 60_000 -
+    (now - Date.parse(mission.usage.startedAt!));
+  return Math.max(0, Math.min(PLANNER_TIMEOUT_MS, mission.budget.agentTimeoutMs, remaining));
+}
 
 /** The shape the planner agent must return. Everything else is rejected. */
 interface RawPlanTask {
@@ -94,6 +98,20 @@ export function defaultPlan(pass = 1): TaskNode[] {
   }];
 }
 
+/** Resolve an abandoned planner without spending again or claiming its result. */
+export function interruptPlanning(mission: Mission, reason: string): void {
+  if (mission.planning?.status !== 'running') return;
+  mission.planning = { status: 'resolved', source: 'fallback', error: reason };
+  mission.tasks = defaultPlan();
+  const pass = [...mission.passes].reverse().find(p => p.kind === 'plan');
+  if (pass) {
+    pass.interrupted = true;
+    pass.finishedAt ??= new Date().toISOString();
+    pass.note = reason;
+    // No agentExit is invented when the runner lost the actual outcome.
+  }
+}
+
 /** Build the prompt sent to a planner agent. */
 export function plannerPrompt(mission: Mission): string {
   const spec = mission.spec;
@@ -128,38 +146,14 @@ export function extractJsonArray(text: string): unknown | null {
 }
 
 /**
- * Run a planner agent to produce a task DAG. Falls back to the default
- * single-task plan if the agent is unavailable or produces invalid output —
- * the mission always remains runnable.
+ * Interpret a recorded planner result. Spawning belongs exclusively to the
+ * mission runner so planning cannot bypass ownership, budget, or recovery.
  */
-export async function planWithAgent(
-  mission: Mission,
-  adapter: AgentAdapter
-): Promise<{ tasks: TaskNode[]; source: 'agent' | 'fallback'; error?: string }> {
-  const ctx: AgentInvocationContext = {
-    prompt: plannerPrompt(mission),
-    cwd: mission.workspace.path,
-    missionId: mission.id,
-    pass: 0,
-    signal: new AbortController().signal,
-    timeoutMs: PLANNER_TIMEOUT_MS,
-    maxOutputBytes: 64 * 1024
-  };
-
+export function planFromResult(
+  result: AgentInvocationResult
+): { tasks: TaskNode[]; source: 'agent' | 'fallback'; error?: string } {
   try {
-    const inv = toSpawnInvocation(adapter.buildInvocation(ctx, mission.agent), ctx.cwd);
-    const result = await supervise({
-      ...inv,
-      cwd: ctx.cwd,
-      timeoutMs: PLANNER_TIMEOUT_MS,
-      maxOutputBytes: 64 * 1024,
-      signal: ctx.signal
-    });
-
     if (result.exitKind !== 'success') {
-      logger.warn('Planner agent failed, using default plan', {
-        mission: mission.id, exitKind: result.exitKind
-      });
       return { tasks: defaultPlan(), source: 'fallback', error: result.exitKind };
     }
 
@@ -172,7 +166,6 @@ export async function planWithAgent(
     return { tasks, source: 'agent' };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.warn('Planner output rejected, using default plan', { mission: mission.id, error: msg });
     return { tasks: defaultPlan(), source: 'fallback', error: msg };
   }
 }

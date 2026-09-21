@@ -22,6 +22,8 @@ export interface CreateMissionOptions {
   kind?: Mission['kind'];
   policy?: Policy;              // resolved override; defaults to repo policy
   budget?: Partial<MissionBudget>;
+  /** Request one budgeted planner attempt after preparation, inside the runner. */
+  planning?: boolean;
   workspaceMode?: 'worktree' | 'in-place';
   /** Explicit operator sign-off for in-place mode (still gated) */
   inPlaceApproved?: boolean;
@@ -95,6 +97,7 @@ export function createMission(opts: CreateMissionOptions, store: MissionStore): 
     stateHistory: [{ state: MissionState.CREATED, at: now }],
     tasks: [],
     passes: [],
+    ...(opts.planning ? { planning: { status: 'pending' as const } } : {}),
     approvals: [],
     checkpoints: [],
     usage: { agentInvocations: 0, repairPasses: 0, wallTimeMs: 0 },

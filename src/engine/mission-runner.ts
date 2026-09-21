@@ -20,6 +20,7 @@ import { writeReceipt } from '../mission/receipt.js';
 import { boundTail } from '../util/redact.js';
 import { pidAlive } from './recovery.js';
 import { logger } from '../logger.js';
+import { interruptPlanning, planFromResult, plannerPrompt, planningTimeoutMs } from './planner.js';
 
 /**
  * Mission runner — drives one mission through its lifecycle:
@@ -247,6 +248,15 @@ export class MissionRunner {
 
   /** RUNNING: execute ready tasks via the agent, then → VALIDATING. */
   private async stepExecute(mission: Mission): Promise<void> {
+    if (mission.planning?.status === 'running') {
+      this.store.mutate(mission.id, m => interruptPlanning(m,
+        'interrupted: planner outcome unknown; deterministic fallback, no planner retry'));
+      return;
+    }
+    if (mission.planning?.status === 'pending') {
+      await this.stepPlan(mission);
+      return;
+    }
     const ready = readyTasks(mission.tasks);
 
     if (ready.length === 0) {
@@ -373,6 +383,69 @@ export class MissionRunner {
     }
 
     this.store.transition(mission, MissionState.VALIDATING, 'execute pass complete');
+  }
+
+  /** Planning is a counted attempt under the same lease as implementation. */
+  private async stepPlan(mission: Mission): Promise<void> {
+    if (this.checkInterrupts(mission) || this.checkBudget(mission, true)) return;
+    if (planningTimeoutMs(mission) <= 0) {
+      this.fail(mission, 'budget exceeded: no mission wall time remains for planning');
+      return;
+    }
+    const invocationId = `inv_${randomBytes(6).toString('hex')}`;
+    this.store.mutate(mission.id, m => {
+      m.planning = { status: 'running' };
+      m.usage.agentInvocations++;
+      m.passes.push({
+        n: m.passes.length + 1, kind: 'plan', intent: { kind: 'plan' },
+        agentInvocationId: invocationId, startedAt: new Date().toISOString()
+      });
+    });
+    Object.assign(mission, this.store.mustLoad(mission.id));
+    let result: AgentInvocationResult;
+    try {
+      result = await this.invokeAgent(mission, undefined, 'plan', plannerPrompt(mission));
+    } catch (err) {
+      result = { exitKind: 'spawn-error', exitCode: null, durationMs: 0,
+        outputTail: boundTail(String(err), 2048).text, outputTruncated: false };
+    }
+    if (this.leaseLost) return; // the new owner/recovery owns the unknown result
+    const fresh = this.store.mustLoad(mission.id);
+    const paused = !this.cancelRequested && (this.pauseRequested || fresh.state === MissionState.PAUSED);
+    const cancelled = !paused && (result.exitKind === 'cancelled' || this.cancelRequested ||
+      fresh.state === MissionState.CANCELLED);
+    const plan = planFromResult(result);
+    const planError = plan.error ? boundTail(plan.error, 2048).text : undefined;
+    this.store.mutate(mission.id, m => {
+      const pass = m.passes.find(p => p.agentInvocationId === invocationId)!;
+      pass.finishedAt = new Date().toISOString();
+      pass.agentExit = result.exitKind;
+      if (paused) {
+        interruptPlanning(m, 'interrupted: planner paused; deterministic fallback, no planner retry');
+      } else if (cancelled) {
+        m.planning = { status: 'cancelled' };
+        pass.note = 'planning cancelled';
+      } else {
+        m.tasks = plan.tasks;
+        m.planning = { status: 'resolved', source: plan.source, error: planError };
+        pass.note = planError ? `planner fallback: ${planError}` : 'agent plan accepted';
+      }
+    });
+    this.store.emit(mission.id, 'agent_finished', {
+      kind: 'plan', invocationId, exit: result.exitKind, exitCode: result.exitCode,
+      durationMs: result.durationMs, truncated: result.outputTruncated
+    });
+    Object.assign(mission, this.store.mustLoad(mission.id));
+    if (paused) {
+      if (mission.state !== MissionState.PAUSED) {
+        this.store.transition(mission, MissionState.PAUSED, `${this.pauseReason} pause requested`);
+      }
+      return;
+    }
+    if (cancelled) {
+      if (mission.state !== MissionState.CANCELLED) this.store.transition(mission, MissionState.CANCELLED, 'planner cancelled');
+      this.finalizeOutcome(mission.id, 'cancelled', 'Planner invocation cancelled');
+    }
   }
 
   /** VALIDATING: run deterministic gates + review. */
@@ -613,8 +686,8 @@ export class MissionRunner {
 
   private async invokeAgent(
     mission: Mission,
-    task: TaskNode,
-    kind: 'execute' | 'repair',
+    task: TaskNode | undefined,
+    kind: 'plan' | 'execute' | 'repair',
     promptOverride?: string
   ): Promise<AgentInvocationResult> {
     const adapter = getAdapter(String(mission.agent.type), mission.agent);
@@ -622,10 +695,10 @@ export class MissionRunner {
     const logFile = join(this.store.dir(mission.id), `agent-${invocationId ?? `pass-${mission.usage.agentInvocations}`}.log`);
 
     const prompt = promptOverride ??
-      this.buildTaskPrompt(mission, task, mission.tasks.find(t => t.id === task.id)?.interrupted === true);
+      this.buildTaskPrompt(mission, task!, mission.tasks.find(t => t.id === task?.id)?.interrupted === true);
 
     this.store.emit(mission.id, 'agent_started', {
-      agent: String(mission.agent.type), taskId: task.id, kind, invocationId
+      agent: String(mission.agent.type), taskId: task?.id, kind, invocationId
     });
 
     if (this.opts.dryRun) {
@@ -636,25 +709,37 @@ export class MissionRunner {
     }
 
     const signal = combinedSignal([this.abort.signal, this.pauseAbort.signal]);
+    const plannerTimeout = kind === 'plan' ? planningTimeoutMs(mission) : undefined;
+    if (plannerTimeout !== undefined && plannerTimeout <= 0) {
+      return { exitKind: 'timeout', exitCode: null, durationMs: 0,
+        outputTail: 'mission wall budget exhausted before planner spawn', outputTruncated: false, logFile };
+    }
     const ctx: import('../types.js').AgentInvocationContext = {
       prompt,
       cwd: mission.workspace.path,
       missionId: mission.id,
-      taskId: task.id,
+      taskId: task?.id,
       pass: mission.passes.at(-1)?.n ?? 0,
       signal,
       env: mission.agent.env,
-      timeoutMs: mission.budget.agentTimeoutMs,
+      timeoutMs: plannerTimeout ?? mission.budget.agentTimeoutMs,
       maxOutputBytes: AGENT_LOG_TAIL,
       logFile
     };
 
     const inv = toSpawnInvocation(adapter.buildInvocation(ctx, mission.agent), ctx.cwd);
+    // Adapter/shim resolution may perform synchronous I/O. Recheck the actual
+    // remaining deadline after it, not just before constructing the context.
+    const spawnTimeout = kind === 'plan' ? planningTimeoutMs(mission) : ctx.timeoutMs;
+    if (spawnTimeout <= 0 && kind === 'plan') {
+      return { exitKind: 'timeout', exitCode: null, durationMs: 0,
+        outputTail: 'mission wall budget exhausted before planner spawn', outputTruncated: false, logFile };
+    }
 
     const result = await supervise({
       ...inv,
       cwd: ctx.cwd,
-      timeoutMs: ctx.timeoutMs,
+      timeoutMs: spawnTimeout,
       maxOutputBytes: ctx.maxOutputBytes,
       logFile,
       signal,
