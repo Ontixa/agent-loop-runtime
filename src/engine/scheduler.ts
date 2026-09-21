@@ -4,7 +4,7 @@ import { MissionRunner, RunnerOptions } from './mission-runner.js';
 import { ConfigManager } from '../config/config-manager.js';
 import { prepareMission } from './mission-factory.js';
 import { detectStaleMissions, recoverMission } from './recovery.js';
-import { planWithAgent, defaultPlan, maintenancePlan } from './planner.js';
+import { maintenancePlan } from './planner.js';
 import { getAdapter } from '../agents/registry.js';
 import { MissionState } from '../types.js';
 import { isTerminal } from '../mission/state-machine.js';
@@ -223,13 +223,16 @@ export class MissionScheduler extends EventEmitter {
     // Prepare if needed
     if (mission.state === MissionState.CREATED) {
       try {
-        // Plan before worktree exists — planner uses repo root as cwd fallback
-        mission.workspace.path = mission.repository.path;
-        const adapter = getAdapter(String(mission.agent.type), mission.agent);
-        const plan = mission.kind === 'maintenance'
-          ? { tasks: maintenancePlan(mission, { hasTests: true, hasDocs: true, largeFiles: [] }), source: 'maintenance' as const }
-          : await planWithAgent(mission, adapter).catch(() => ({ tasks: defaultPlan(), source: 'fallback' as const }));
-        await prepareMission(mission, store, { plannerTasks: plan.tasks });
+        const tasks = mission.tasks.length > 0 ? mission.tasks
+          : mission.kind === 'maintenance'
+            ? maintenancePlan(mission, { hasTests: true, hasDocs: true, largeFiles: [] })
+            : undefined;
+        if (!tasks && !mission.planning) {
+          Object.assign(mission, store.mutate(missionId, m => { m.planning = { status: 'pending' }; }));
+        }
+        // Preparation is non-agent work. Planning runs later under the runner's
+        // lease and cumulative budget, against the allocated mission workspace.
+        await prepareMission(mission, store, { plannerTasks: tasks });
       } catch (err) {
         store.transition(mission, MissionState.FAILED,
           `prepare failed: ${err instanceof Error ? err.message : String(err)}`);

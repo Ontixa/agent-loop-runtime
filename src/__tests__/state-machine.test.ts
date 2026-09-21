@@ -40,6 +40,7 @@ describe('mission state machine', () => {
   test('pause/resume/cancel paths', () => {
     assert.ok(canTransition(S.RUNNING, S.PAUSED));
     assert.ok(canTransition(S.PAUSED, S.RUNNING)); // resume re-drives
+    assert.ok(canTransition(S.PAUSED, S.PREPARED)); // recovery audits before resume
     assert.ok(canTransition(S.RUNNING, S.CANCELLED));
     assert.ok(canTransition(S.PAUSED, S.CANCELLED));
   });

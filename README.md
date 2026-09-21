@@ -91,6 +91,12 @@ select another detected CLI. The repository needs at least one existing commit.
 This first run uses `--no-plan` to create one implementation task without a
 separate model-planning call; validation and review still run.
 
+Without `--no-plan`, planning runs inside the prepared workspace under the same
+runner lease and budget as implementation. `maxAgentInvocations` counts planning
+attempts too: a cap of one permits a planner or a worker, not both. Interrupted
+planning keeps its debit and falls back without automatically calling the planner
+again. See [planning lifecycle and receipt compatibility](docs/planning-lifecycle.md).
+
 Missions pause for human approval when policy demands it:
 
 ```bash

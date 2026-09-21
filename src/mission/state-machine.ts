@@ -24,7 +24,8 @@ const TRANSITIONS: ReadonlyMap<MissionState, ReadonlySet<MissionState>> = new Ma
     MissionState.BLOCKED, MissionState.FAILED, MissionState.CANCELLED, MissionState.STALE
   ])],
   [MissionState.PAUSED, new Set([
-    MissionState.RUNNING, MissionState.CANCELLED, MissionState.FAILED, MissionState.STALE
+    MissionState.RUNNING, MissionState.CANCELLED, MissionState.FAILED, MissionState.STALE,
+    MissionState.PREPARED // recovery audits paused work before resuming
   ])],
   [MissionState.WAITING_FOR_APPROVAL, new Set([
     MissionState.RUNNING, MissionState.REPAIRING, MissionState.VALIDATING,
