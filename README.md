@@ -22,8 +22,11 @@ git clone https://github.com/Ontixa/agent-loop-runtime.git
 cd agent-loop-runtime
 npm ci
 npm run build
-npm link        # puts `agentloop` on PATH
+node scripts/demo-mission.mjs
 ```
+
+The final command runs a provider-free mission immediately. No global install
+or AI account is needed for this demo.
 
 Use Node.js 24.14.1 (the locally verified version) and Git. Node 18 is not
 compatible with the locked dependency requirements. Windows (PowerShell, Git for
@@ -37,7 +40,8 @@ for the intentional contents and verification limits.
 
 ## Try a mission without an AI account
 
-After building from source, run:
+The install sequence above runs this demo. To run it again from the runtime
+checkout after building:
 
 ```bash
 node scripts/demo-mission.mjs
@@ -67,6 +71,17 @@ the separate `npm run test:e2e` gate. To use a real coding agent, continue below
 and configure that CLI's authentication, sandbox and workspace trust.
 
 ## Quick start
+
+The commands below use `agentloop` on PATH. **Optional:** from the built runtime
+checkout (before changing into your target repository), create that command:
+
+```bash
+npm link
+```
+
+This changes your global npm command links; it is not needed for the demo. If you
+skip linking, replace each `agentloop` below with
+`node "<absolute-path-to-agent-loop-runtime>/dist/cli.js"` instead.
 
 ```bash
 cd your-repo
