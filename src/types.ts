@@ -453,11 +453,13 @@ export interface AgentInvocationContext {
   logFile?: string;
 }
 
-/** The argv/env for one agent invocation — never a shell string */
+/** The argv/env transport for one invocation; batch encoding is internal. */
 export interface AgentInvocation {
   command: string;
   args: string[];
   env?: Record<string, string>;
+  /** Internal transport for an already-quoted Windows batch invocation. */
+  windowsVerbatimArguments?: boolean;
 }
 
 /** How a completed invocation ended */

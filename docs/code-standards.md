@@ -4,7 +4,7 @@
 
 - TypeScript, `"type": "module"` — relative imports carry `.js` extensions.
 - Strict typing; domain types live in `src/types.ts` only.
-- Node 18+ APIs; no platform-specific code outside guarded branches (Windows is first-class — always handle `.cmd`/`.exe` resolution via `toSpawnInvocation`).
+- Node 24.14.1 is the locally verified runtime; do not claim a lower version without dependency and execution checks. No platform-specific code outside guarded branches (Windows is first-class — handle `.cmd`/`.exe` resolution via `toSpawnInvocation`).
 
 ## Process & command execution
 

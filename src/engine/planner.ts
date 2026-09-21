@@ -147,12 +147,10 @@ export async function planWithAgent(
   };
 
   try {
-    const inv = toSpawnInvocation(adapter.buildInvocation(ctx, mission.agent));
+    const inv = toSpawnInvocation(adapter.buildInvocation(ctx, mission.agent), ctx.cwd);
     const result = await supervise({
-      command: inv.command,
-      args: inv.args,
+      ...inv,
       cwd: ctx.cwd,
-      env: inv.env,
       timeoutMs: PLANNER_TIMEOUT_MS,
       maxOutputBytes: 64 * 1024,
       signal: ctx.signal

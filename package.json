@@ -32,7 +32,7 @@
     "aider"
   ],
   "author": "tang-vu",
-  "license": "ISC",
+  "license": "MIT",
   "bugs": {
     "url": "https://github.com/Ontixa/agent-loop-runtime/issues"
   },

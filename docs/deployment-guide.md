@@ -5,11 +5,13 @@
 ```bash
 git clone https://github.com/Ontixa/agent-loop-runtime.git
 cd agent-loop-runtime
-npm install && npm run build
+npm ci && npm run build
 npm link   # provides `agentloop`
 ```
 
-Requirements: Node.js 18+, Git. Windows 11 (PowerShell + Git for Windows) is first-class; WSL not required.
+Use Node.js 24.14.1 (locally verified) and Git. Node 18 does not meet the locked
+dependency requirements. Windows with PowerShell and Git for Windows does not
+require WSL; verify vendor sandbox and workspace-trust setup separately.
 
 ## Per-repository setup
 

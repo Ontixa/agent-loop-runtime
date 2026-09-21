@@ -1,6 +1,6 @@
 # Codebase Summary
 
-TypeScript ESM project (`"type": "module"`), Node 18+, compiled to `dist/`. Entry: `src/cli.ts` (`agentloop` bin) and `src/index.ts` (library API).
+TypeScript ESM project (`"type": "module"`), locally verified on Node 24.14.1, compiled to `dist/`. Entry: `src/cli.ts` (`agentloop` bin) and `src/index.ts` (library API). Node 18 does not satisfy the locked dependencies.
 
 ## Layout
 

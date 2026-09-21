@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import { existsSync } from 'fs';
+import { quoteBatchLiteral, windowsInvocation } from './windows-invocation.js';
 import type {
   AgentAdapter, AgentAvailability, AgentConfig, AgentInvocation,
   AgentInvocationContext, AgentInvocationResult, AgentExitKind
@@ -9,10 +10,9 @@ import { logger } from '../logger.js';
 /**
  * Shared machinery for CLI-based agent adapters.
  *
- * Executable resolution handles Windows shims (.cmd/.bat cannot be spawned
- * with shell:false since Node 20.12 — they are routed through cmd.exe with
- * strictly quoted argv, which is not the same as shell:true string
- * interpolation and does not permit shell metacharacter injection).
+ * Windows npm Node shims resolve to their JavaScript entry point and retain
+ * native argv semantics. Other batch wrappers accept restricted literal
+ * arguments only; arbitrary prompts must never enter cmd.exe parsing.
  */
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -53,28 +53,19 @@ export function isBatchShim(executable: string): boolean {
 }
 
 /**
- * Quote one argument for a cmd.exe command line: wrap in double quotes and
- * double inner quotes. Inside quotes, & | < > ^ are literal in cmd.exe.
+ * Quote a restricted literal batch argument; shell-sensitive values are refused.
  */
 export function cmdQuote(arg: string): string {
-  return `"${arg.replace(/"/g, '""')}"`;
+  return quoteBatchLiteral(arg);
 }
 
 /**
  * Convert an argv invocation into the actual spawn call.
- * On Windows, .cmd/.bat shims go through cmd.exe /d /s /c with every argument
- * double-quoted — argv semantics preserved, no shell string interpolation.
+ * Callers must forward the complete result to spawn/supervise, including the
+ * Windows transport flag, and provide the child's cwd for relative commands.
  */
-export function toSpawnInvocation(inv: AgentInvocation): AgentInvocation {
-  if (IS_WINDOWS && isBatchShim(inv.command)) {
-    const line = [cmdQuote(inv.command), ...inv.args.map(cmdQuote)].join(' ');
-    return {
-      command: 'cmd.exe',
-      args: ['/d', '/s', '/c', line],
-      env: inv.env
-    };
-  }
-  return inv;
+export function toSpawnInvocation(inv: AgentInvocation, cwd = process.cwd()): AgentInvocation {
+  return IS_WINDOWS ? windowsInvocation(inv, cwd) : inv;
 }
 
 /** Probe `exe <versionArgs>` for a version string. Never throws. */
@@ -85,6 +76,7 @@ export async function probeVersion(executable: string, versionArgs: string[] = [
     try {
       proc = spawn(inv.command, inv.args, {
         shell: false, windowsHide: true,
+        windowsVerbatimArguments: inv.windowsVerbatimArguments,
         env: process.env,
         detached: process.platform !== 'win32'
       });

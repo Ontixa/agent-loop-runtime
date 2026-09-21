@@ -93,6 +93,34 @@ describe('process supervisor — output bounds', () => {
   });
 });
 
+describe('process supervisor — non-interactive stdin', () => {
+  test('stdin readers receive EOF and stdout/stderr remain captured', async () => {
+    const result = await run(`
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => { input += chunk; });
+process.stdin.on('end', () => {
+  console.log('stdin-eof:' + JSON.stringify(input));
+  console.error('stderr-after-eof');
+});
+process.stdin.resume();
+`);
+    assert.equal(result.exitKind, 'success', result.outputTail);
+    assert.equal(result.exitCode, 0);
+    assert.ok(result.outputTail.includes('stdin-eof:""'));
+    assert.ok(result.outputTail.includes('stderr-after-eof'));
+  });
+
+  test('synchronous stdin reads do not block argv-based agents', async () => {
+    const result = await run(`
+const input = require('fs').readFileSync(0, 'utf8');
+console.log('sync-stdin:' + JSON.stringify(input));
+`);
+    assert.equal(result.exitKind, 'success', result.outputTail);
+    assert.equal(result.outputTail.trim(), 'sync-stdin:""');
+  });
+});
+
 describe('process supervisor — log file streaming', () => {
   test('logFile receives output while tail stays bounded', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'alr-log-'));
