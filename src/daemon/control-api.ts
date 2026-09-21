@@ -55,8 +55,18 @@ export class ControlApi {
 
   constructor(private readonly opts: ControlApiOptions) {}
 
+  private get port(): number {
+    const address = this.server?.address();
+    return address && typeof address !== 'string' ? address.port : this.opts.port ?? 3210;
+  }
+
+  private get authorityHost(): string {
+    const host = this.opts.host ?? '127.0.0.1';
+    return host.includes(':') ? `[${host}]` : host;
+  }
+
   get url(): string {
-    return `http://${this.opts.host ?? '127.0.0.1'}:${this.opts.port ?? 3210}`;
+    return `http://${this.authorityHost}:${this.port}`;
   }
 
   /** The token callers must present — generated when not configured. */
@@ -131,8 +141,8 @@ export class ControlApi {
   private hostOk(req: IncomingMessage): boolean {
     const host = req.headers.host ?? '';
     const bound = this.opts.host ?? '127.0.0.1';
-    const port = this.opts.port ?? 3210;
-    const ok = [`${bound}:${port}`, bound, `localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`];
+    const port = this.port;
+    const ok = [`${this.authorityHost}:${port}`, bound, `localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`];
     return ok.includes(host);
   }
 

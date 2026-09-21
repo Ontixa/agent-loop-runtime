@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { request, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Daemon } from '../daemon/daemon.js';
@@ -45,13 +44,10 @@ async function fixture(configured: boolean, bindFailure = false, publicationFail
     if (process.platform !== 'win32') {
       assert.equal(statSync(join(dir, 'daemon.json')).mode & 0o777, 0o600);
     }
-    // Actual port introspection isolates token publication from the existing
-    // port-zero URL issue. Bound Host matches the production host allowlist.
-    const api = (daemon as unknown as { api: { server: Server } }).api;
-    const { port } = api.server.address() as AddressInfo;
+    assert.ok(Number(new URL(state.url).port) > 0, 'published URL must locate the running listener');
     const status = (bearer?: string) => new Promise<number>((resolve, reject) => {
-      const req = request({ hostname: '127.0.0.1', port, path: '/v1/status',
-        headers: { Host: '127.0.0.1', ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}) } }, res => {
+      const req = request(`${state.url}/v1/status`, {
+        headers: bearer ? { Authorization: `Bearer ${bearer}` } : {} }, res => {
         res.resume(); res.once('end', () => resolve(res.statusCode!)); res.once('error', reject);
       });
       req.setTimeout(10_000, () => req.destroy(new Error('fixture request timed out')));
