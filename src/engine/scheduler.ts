@@ -107,9 +107,12 @@ export class MissionScheduler extends EventEmitter {
     await Promise.allSettled(stops);
   }
 
-  /** Pause a running mission. */
+  /** Request pause; true acknowledges an owned runner, not a completed pause. */
   pause(missionId: string): boolean {
-    return this.running.get(missionId)?.runner.requestPause() !== undefined;
+    const entry = this.running.get(missionId);
+    if (!entry) return false;
+    entry.runner.requestPause();
+    return true;
   }
 
   /** Cancel a running mission. */
