@@ -153,6 +153,21 @@ describeGit('worktree lifecycle', () => {
 });
 
 describeGit('git runner', () => {
+  test('singleton version diagnostic succeeds with installed Git', async () => {
+    assert.match(await gitStdout(['--version'], repo), /^git version /);
+  });
+
+  test('version exception rejects appended arguments and other global flags', async () => {
+    for (const args of [
+      ['--version', 'status'], ['--version', '--help'],
+      ['--version', '-c', 'alias.x=!echo'], ['--help'],
+      ['-C', repo, 'status'], ['-c', 'alias.x=!echo', 'x']
+    ]) {
+      await assert.rejects(() => gitSep(args, repo), (error: unknown) =>
+        error instanceof GitError && error.message.startsWith('Disallowed git subcommand:'));
+    }
+  });
+
   test('gitStdout returns trimmed stdout', async () => {
     assert.equal(await gitStdout(['rev-parse', 'HEAD'], repo), sha);
   });

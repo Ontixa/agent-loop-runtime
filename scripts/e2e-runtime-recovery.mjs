@@ -118,7 +118,18 @@ check('fixture committed', true, run('git', ['add', '-A'], fixture) ?? '');
 run('git', ['commit', '-m', 'fixture'], fixture);
 
 const doctorOut = cli(['doctor', '--json'], fixture);
-check('doctor runs on fixture', doctorOut.includes('git') || doctorOut.length > 10);
+const gitCheck = JSON.parse(doctorOut).checks.find(c => c.name === 'git');
+check('packed doctor recognizes installed Git', gitCheck?.ok === true && /^git version /.test(gitCheck.detail));
+
+// Isolate only this child's lookup. Node/CLI/custom-agent paths are absolute;
+// no vendor CLI or global host configuration is involved.
+const emptyPath = join(work, 'empty-path');
+mkdirSync(emptyPath);
+const noGitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'));
+noGitEnv.PATH = emptyPath;
+const missingGitCheck = JSON.parse(cli(['doctor', '--json'], fixture, { env: noGitEnv }))
+  .checks.find(c => c.name === 'git');
+check('packed doctor reports unavailable Git', missingGitCheck?.ok === false && /ENOENT/.test(missingGitCheck.detail));
 
 // ── 3. run → kill mid-agent ─────────────────────────────────────────────
 console.log('phase 3: run mission, SIGKILL the runner mid-agent');
