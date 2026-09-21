@@ -51,3 +51,19 @@ not have been recorded if its collection failed after the commit.
 
 These changes address output overflow only; they do not claim every pre-existing
 Git error fallback or list-size limit is a complete repository security audit.
+
+## Complete path lists for hard review
+
+Deterministic review uses `changedFilesStrict`, a complete path list bounded by
+the transport ceiling, not the display helper's default 500-entry limit. It uses
+raw `git diff --name-only -z --no-renames <base> <ref> --` output: no trimming,
+newline splitting, or count truncation. Disabling rename detection includes both
+the deleted source and added destination so protected-source changes remain
+visible. Ordinary Git failures, overflow, and malformed NUL framing fail review
+with `request-changes`; they are not empty successful inspections.
+
+The existing `changedFiles(..., max)` display helper retains its bounded behavior
+and must not be used for hard review or authorization. Textual Unicode names,
+spaces, tabs, quotes and newlines are preserved by the strict helper. The current
+transport decodes UTF-8; this is not byte-exact support for arbitrary non-UTF-8
+POSIX filename bytes. Scope and protected-path matching rules are unchanged.
