@@ -82,7 +82,8 @@ read the credential from `.agentloop/daemon.json` (or `AGENTLOOP_HOME/daemon.jso
 Never print or pass this administrative token to an agent. The status file is
 created with POSIX mode `0600`; on Windows, restrict the directory's inherited ACL
 to the operator account. This is not isolation from processes running as that user.
-Use a configured nonzero port: port-zero URL discovery is not supported yet.
+With port `0`, the operating system assigns an available port; read the running
+daemon's actual URL from the status file. IPv6 literal URLs use brackets.
 
 ## Operational runbook
 
