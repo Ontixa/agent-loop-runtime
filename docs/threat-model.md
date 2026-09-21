@@ -1,5 +1,12 @@
 # Threat Model — Agent Loop Runtime
 
+Git subprocess output has an aggregate 8 MiB capture ceiling. Overflow is
+explicit incomplete evidence, never a truncated successful inspection; preflight
+blocks, review requests changes, and checkpoint overflow blocks the runner.
+See [Git output limits and compatibility](git-output-limits.md) for exceptional
+nullable inspection fields, caller behavior, and direct-child termination and
+post-mutation limitations.
+
 Scope: what the runtime **enforces**, what it **detects**, and what it **does not**
 claim to prevent. Nothing below is aspirational — each line maps to code or a test.
 

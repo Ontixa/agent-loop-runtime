@@ -13,6 +13,7 @@ import { runValidationGates, resolveGates } from './validation-gates.js';
 import { deterministicReview, reviewToPrompt } from './reviewer.js';
 import { checkpointCommit } from '../git/worktree-manager.js';
 import { diffSummary } from '../git/repo-inspector.js';
+import { GitOutputLimitError } from '../git/git-runner.js';
 import {
   requestApproval, loadApprovals, policyHash as computePolicyHash, verifyDecision
 } from '../policy/approvals.js';
@@ -808,7 +809,10 @@ export class MissionRunner {
         `agentloop(${mission.id}): ${kind}${pass ? ` pass ${pass}` : ''}`
       );
       if (sha) {
-        const diff = await diffSummary(mission.workspace.path, mission.repository.baseSha).catch(() => undefined);
+        const diff = await diffSummary(mission.workspace.path, mission.repository.baseSha).catch(error => {
+          if (error instanceof GitOutputLimitError) throw error;
+          return undefined;
+        });
         this.store.mutate(missionId, m => {
           m.checkpoints.push({ sha, at: new Date().toISOString(), kind, pass, diffSummary: diff });
           const p = m.passes.at(-1);
@@ -817,6 +821,7 @@ export class MissionRunner {
         this.store.emit(missionId, 'checkpoint_created', { sha: sha.slice(0, 10), kind, pass, diff });
       }
     } catch (err) {
+      if (err instanceof GitOutputLimitError) throw err;
       logger.warn('Checkpoint failed (non-fatal)', {
         mission: missionId,
         error: err instanceof Error ? err.message : String(err)

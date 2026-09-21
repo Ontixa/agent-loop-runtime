@@ -1,4 +1,4 @@
-import { gitStdout, gitSep } from '../git/git-runner.js';
+import { gitStdout, GitOutputLimitError } from '../git/git-runner.js';
 import { changedFiles, diffSummary } from '../git/repo-inspector.js';
 import { isProtectedPath } from '../policy/command-safety.js';
 import type { Mission, ReviewResult } from '../types.js';
@@ -69,7 +69,9 @@ export async function deterministicReview(input: DeterministicReviewInput): Prom
             if (re.test(diff)) findings.push(finding);
           }
         }
-      } catch { /* diff unavailable — note below */ }
+      } catch (error) {
+        if (error instanceof GitOutputLimitError) throw error;
+      }
     }
 
     // Non-goal advisory: flag dependency manifest changes when constrained
