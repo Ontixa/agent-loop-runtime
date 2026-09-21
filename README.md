@@ -29,30 +29,65 @@ Use Node.js 24.14.1 (the locally verified version) and Git. Node 18 is not
 compatible with the locked dependency requirements. Windows (PowerShell, Git for
 Windows) is supported without WSL; vendor CLI sandbox/trust setup is separate.
 
+## Try a mission without an AI account
+
+After building from source, run:
+
+```bash
+node scripts/demo-mission.mjs
+```
+
+This uses a **deterministic Node fixture agent**, not a model. No AI credentials
+or provider calls are needed. It creates a disposable temporary Git repository,
+runs one bounded invocation in an isolated worktree, verifies exact file content,
+and prints the persisted receipt path. It also checks that the original fixture
+checkout and HEAD are unchanged. Your current project is not used as the mission
+repository, and no commit is pushed or merged.
+
+To see a successful agent process rejected by real validation:
+
+```bash
+node scripts/demo-mission.mjs --fail-validation
+```
+
+That deliberately writes incorrect bytes and exits **1**, after verifying the
+mission failed and its receipt recorded the failing gate. `--help` has no mission
+side effects. Both demonstrations retain the printed temporary directory for
+inspection; remove only that exact disposable directory when finished.
+
+These examples do not test a vendor CLI, sandbox containment, or crash recovery.
+Run `node scripts/test-demo.mjs` to check both outcomes; packed crash recovery is
+the separate `npm run test:e2e` gate. To use a real coding agent, continue below
+and configure that CLI's authentication, sandbox and workspace trust.
+
 ## Quick start
 
 ```bash
 cd your-repo
 
 # 1. Scaffold config + policy files
-agentloop init
+agentloop init --agent codex
 
 # 2. Check environment (git, agents detected, config, policy)
 agentloop doctor
 
 # 3. Define acceptance criteria via validation commands in agentloop.config.json
-#    (see Configuration below)
+#    (see Validation gates below)
 
 # 4. Run a mission — isolated worktree, bounded, resumable
-agentloop run "Fix the date-parsing bug in src/parser.ts" \
-  --criteria "npm test passes"
+agentloop run "Fix the date-parsing bug in src/parser.ts" --criteria "npm test passes"
 
 # 5. Inspect
-agentloop missions
+agentloop missions --all
 agentloop status <missionId>
 agentloop logs <missionId>
 agentloop report <missionId>          # human + --json receipt: passes, gates, recovery audit, outcome
 ```
+
+Choose the installed, authenticated CLI you intend to use (`codex` above is an
+example). Without `--agent`, `init` defaults to Qwen; it does not automatically
+select another detected CLI. The repository needs at least one existing commit.
+`--criteria` describes acceptance but does not configure a validation command.
 
 Missions pause for human approval when policy demands it:
 
@@ -94,8 +129,10 @@ State is persisted under `.agentloop/missions/<id>/` (`mission.json` CAS + `miss
 
 Acceptance is proven by deterministic commands you configure — not by the agent declaring "looks done".
 
-```jsonc
-// agentloop.config.json
+Merge this field into `agentloop.config.json`, retaining the generated agent
+configuration. Use actual commands provided by your project:
+
+```json
 {
   "validationCommands": {
     "lint":      ["npm", "run", "lint"],
@@ -113,24 +150,29 @@ Gates are classified against policy before execution:
 
 ## Policy
 
-```jsonc
-// agentloop.policy.json
+Example `agentloop.policy.json` (valid JSON; mode values are `never`, `approval`,
+or `always` where supported):
+
+```json
 {
   "allowLocalCommit": true,
-  "push": "approval",            // never | approval | always
-  "pullRequest": "never",
+  "allowPush": "approval",
+  "allowPullRequest": "never",
   "allowNetwork": true,
   "maxMissionMinutes": 180,
   "maxRepairPasses": 4,
   "agentTimeoutMs": 600000,
   "allowedCommands": [["npm", "test"], ["npm", "run", "lint"]],
   "approvalRequiredCommands": [["npm", "publish"]],
-  "protectedPaths": [".agentloop/**", "**/*.env", "**/secrets/**"],
+  "protectedPaths": [".agentloop/**", "agentloop.policy.json", "agentloop.config.json", ".git/**", "**/*.env", "**/secrets/**"],
   "approvalTimeoutMs": 3600000,
   "maxConcurrentMissionsPerRepo": 2,
-  "maxConcurrentMissionsGlobal": 4
+  "maxConcurrentMissions": 4
 }
 ```
+
+Arrays such as `protectedPaths` replace defaults; retain the runtime/config/Git
+paths shown above when adding your own patterns. Use JSON without comments.
 
 ## Agent adapters
 
@@ -181,7 +223,7 @@ for why `.cmd` files need a different transport from native executables.
 
 Custom agents use argv templates with validated placeholders — never shell strings:
 
-```jsonc
+```json
 {
   "agents": [{
     "name": "my-agent",

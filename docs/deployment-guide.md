@@ -5,7 +5,8 @@
 ```bash
 git clone https://github.com/Ontixa/agent-loop-runtime.git
 cd agent-loop-runtime
-npm ci && npm run build
+npm ci
+npm run build
 npm link   # provides `agentloop`
 ```
 
@@ -17,12 +18,33 @@ require WSL; verify vendor sandbox and workspace-trust setup separately.
 
 ```bash
 cd <repo>
-agentloop init      # writes agentloop.config.json + agentloop.policy.json
+agentloop init --agent codex # choose your installed, authenticated CLI
 agentloop doctor    # verifies git, agents, config, policy
 ```
 
 `agentloop.config.json` — agents, `validationCommands` (the deterministic gates), daemon settings.
 `agentloop.policy.json` — allowlists, budgets, protected paths, push/PR modes, approval timeout.
+
+The repository needs at least one commit. Without `--agent`, `init` defaults to
+Qwen rather than automatically choosing an installed CLI.
+
+Before running a mission, edit the generated config to add real validation
+commands, keeping its agent configuration. For a project that defines `npm test`,
+merge this field into `agentloop.config.json`:
+
+```json
+{
+  "validationCommands": {
+    "test": ["npm", "test"]
+  }
+}
+```
+
+Allow that exact command in policy or explicitly approve it when requested.
+`--criteria` is descriptive text, not an executable gate definition. See
+[Validation gates](../README.md#validation-gates) and the policy example; use
+actual JSON without comments, and retain default protected paths when extending
+the array.
 
 ## Running
 
