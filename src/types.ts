@@ -537,7 +537,8 @@ export type RuntimeEventType =
   | 'recovery_audit'
   | 'orphan_process_killed'
   | 'approval_unverified'
-  | 'work_interrupted';
+  | 'work_interrupted'
+  | 'workspace_cleaned';
 
 export interface RuntimeEvent {
   /** Unique event id — lets consumers detect duplicate records on re-read */

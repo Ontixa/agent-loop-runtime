@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import { cmdInit, cmdDoctor, cmdMigrate } from './commands/setup-commands.js';
 import { cmdRun, cmdPause, cmdResume, cmdCancel, cmdApprove } from './commands/mission-commands.js';
 import { cmdMissions, cmdStatus, cmdLogs, cmdReport } from './commands/inspect-commands.js';
+import { cmdClean } from './commands/clean-command.js';
 import { collectHealth } from './health/health.js';
 import { MissionScheduler } from './engine/scheduler.js';
 import { Daemon } from './daemon/daemon.js';
@@ -103,6 +104,20 @@ program
   .description('Cancel a mission permanently')
   .option('-r, --repo <path>', 'Repository path')
   .action((id, opts) => cmdCancel(id, opts.repo));
+
+program
+  .command('clean')
+  .description('Remove worktrees/branches of terminal missions (completed/failed/cancelled)')
+  .option('-r, --repo <path>', 'Repository path')
+  .option('--dry-run', 'Preview what would be removed without deleting')
+  .option('--force', 'Discard uncommitted worktree changes and unmerged mission branches')
+  .option('--keep-branch', 'Remove worktrees but keep agentloop/<id> branches')
+  .option('--older-than <dur>', 'Only missions terminal for longer than <dur> (e.g. 90m, 24h, 7d; bare number = days)')
+  .option('--json', 'Machine-readable output')
+  .action((opts) => cmdClean({
+    repo: opts.repo, dryRun: opts.dryRun, force: opts.force,
+    keepBranch: opts.keepBranch, olderThan: opts.olderThan, json: opts.json
+  }));
 
 program
   .command('approve <missionId> <approvalId>')

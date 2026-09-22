@@ -8,7 +8,7 @@ TypeScript ESM project (`"type": "module"`), locally verified on Node 24.14.1, c
 |---|---|
 | `src/types.ts` | Canonical domain types: Mission, MissionState, TaskNode, Policy, ApprovalRequest, GateResult, AgentConfig |
 | `src/cli.ts` | Commander CLI — all `agentloop` subcommands |
-| `src/commands/` | CLI command implementations (`mission-`, `inspect-`, `setup-commands.ts`) |
+| `src/commands/` | CLI command implementations (`setup-`, `mission-`, `inspect-`, `clean-command.ts`) |
 | `src/index.ts` | Public library exports |
 | `src/agents/` | Adapter contract (`cli-adapter-base`), `vendor-adapters`, `custom-adapter`, `registry` |
 | `src/supervisor/process-supervisor.ts` | argv spawn, bounded buffers, log streaming, timeout, tree-kill, exit classification |
