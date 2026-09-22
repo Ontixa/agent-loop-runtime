@@ -72,7 +72,12 @@ On start the daemon sweeps for interrupted missions: dead runners → `stale` �
 `GET  /v1/missions/:id` — inspect
 `POST /v1/missions` — create
 `POST /v1/missions/:id/pause | resume | cancel`
-`GET  /v1/missions/:id/events` — JSONL event stream
+`GET  /v1/missions/:id/events` — event page (`?after=<seq>&limit=<n>`);
+add `?follow` for a bounded NDJSON live tail (`?after=<seq>` also applies).
+Follow streams emit one persisted event per line plus `{"meta":...}` control
+lines (`begin`/`heartbeat`/`end`), close when the mission reaches a terminal
+state, and are capped per connection and per daemon (`daemon.eventFollow`
+config: `pollMs`, `heartbeatMs`, `maxDurationMs`, `maxConnections`).
 
 API data/control requests require bearer authentication, including loopback. Configure
 `daemon.token` or `AGENTLOOP_API_TOKEN` (an explicit credential is required for

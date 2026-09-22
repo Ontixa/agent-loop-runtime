@@ -1,5 +1,6 @@
 import { createServer, Server, IncomingMessage, ServerResponse } from 'http';
 import { randomBytes, timingSafeEqual } from 'crypto';
+import { join } from 'path';
 import { MissionStore } from '../mission/mission-store.js';
 import { MissionScheduler } from '../engine/scheduler.js';
 import { createMission } from '../engine/mission-factory.js';
@@ -8,6 +9,8 @@ import { decideApproval, loadApprovals } from '../policy/approvals.js';
 import { isTerminal } from '../mission/state-machine.js';
 import { MissionState } from '../types.js';
 import type { MissionSpec, AgentConfig, Policy } from '../types.js';
+import { MissionEventFollower, resolveFollowLimits } from './event-follow.js';
+import type { FollowLimits } from './event-follow.js';
 import { logger } from '../logger.js';
 
 /**
@@ -27,7 +30,8 @@ import { logger } from '../logger.js';
  * - Host header must match the bound host — rejects DNS-rebinding probes.
  * - No CORS headers are emitted unless daemon.corsOrigins lists the Origin.
  * - Responses carry schemaVersion/revision/timestamps; never secrets.
- * - Events are paginated via ?after=<seq>&limit=<n>.
+ * - Events are paginated via ?after=<seq>&limit=<n>, or tailed live with
+ *   ?follow (NDJSON; see daemon/event-follow.ts for the line contract).
  */
 
 export interface ControlApiOptions {
@@ -36,6 +40,10 @@ export interface ControlApiOptions {
   token?: string;
   /** Allowed CORS origins (exact match on Origin header). Default: none. */
   corsOrigins?: string[];
+  /** Bounds for ?follow event streams. Defaults in event-follow.ts. */
+  follow?: FollowLimits;
+  /** Max concurrent ?follow streams. Default 32. */
+  maxFollowers?: number;
   /** repos the API serves: repoRoot → {store, policy} */
   repos: Map<string, { store: MissionStore; policy: Policy }>;
   scheduler: MissionScheduler;
@@ -47,11 +55,14 @@ const API_PREFIX = '/v1';
 const API_SCHEMA = 1;
 const MAX_BODY = 64 * 1024;
 const MAX_EVENTS_PER_PAGE = 500;
+const MAX_FOLLOWERS_DEFAULT = 32;
 
 export class ControlApi {
   private server: Server | null = null;
   /** Resolved bearer token — always set after start() (generated if needed). */
   private token = '';
+  /** Open ?follow streams — bounded by maxFollowers, closed on stop(). */
+  private followers = new Set<MissionEventFollower>();
 
   constructor(private readonly opts: ControlApiOptions) {}
 
@@ -86,6 +97,9 @@ export class ControlApi {
 
     this.server = createServer((req, res) => void this.handle(req, res).catch(err => {
       logger.warn('control api error', { error: err instanceof Error ? err.message : String(err) });
+      // A streaming (?follow) response may already hold the socket — writing a
+      // JSON error after headers were sent would throw inside this catch.
+      if (res.headersSent) { try { res.end(); } catch { /* gone */ } return; }
       this.json(res, 500, { error: 'internal error' });
     }));
 
@@ -96,8 +110,16 @@ export class ControlApi {
   }
 
   async stop(): Promise<void> {
+    // Open follow streams would otherwise keep server.close() waiting.
+    for (const f of this.followers) f.end('shutdown');
+    this.followers.clear();
     if (!this.server) return;
-    await new Promise<void>((resolve) => this.server!.close(() => resolve()));
+    // close() alone waits out the keep-alive timeout on idle sockets — drop
+    // them so shutdown is prompt (active follow streams were ended above).
+    await new Promise<void>((resolve) => {
+      this.server!.close(() => resolve());
+      this.server!.closeIdleConnections();
+    });
     this.server = null;
   }
 
@@ -280,9 +302,12 @@ export class ControlApi {
       }
 
       if (action === 'events' && req.method === 'GET') {
+        const after = Number(url.searchParams.get('after') ?? 0) || 0;
+        if (this.wantsFollow(url)) {
+          return this.followEvents(res, store, mission, after);
+        }
         // Paginated: ?after=<seq> returns events with seq > after; ?limit caps
         // the page. Consumers poll with nextAfter for incremental reads.
-        const after = Number(url.searchParams.get('after') ?? 0) || 0;
         const limit = Math.min(
           Math.max(Number(url.searchParams.get('limit') ?? 100) || 100, 1),
           MAX_EVENTS_PER_PAGE
@@ -344,5 +369,51 @@ export class ControlApi {
     }
 
     this.json(res, 404, { error: `not found: ${req.method} ${path}` });
+  }
+
+  // ── event following (?follow) ──────────────────────────────────────────
+
+  /** `?follow`, `?follow=1`, `?follow=true` opt in; `?follow=0/false/no` don't. */
+  private wantsFollow(url: URL): boolean {
+    if (!url.searchParams.has('follow')) return false;
+    const v = (url.searchParams.get('follow') ?? '').toLowerCase();
+    return !['0', 'false', 'no'].includes(v);
+  }
+
+  /**
+   * Upgrade the events route to a bounded NDJSON tail (see event-follow.ts).
+   * Replays persisted events with seq > after, then streams appends until
+   * the mission is terminal, the follow limit is reached, or the peer goes
+   * away. `limit` is a paging concept and is ignored in follow mode.
+   */
+  private followEvents(
+    res: ServerResponse,
+    store: MissionStore,
+    mission: import('../types.js').Mission,
+    after: number
+  ): void {
+    const maxFollowers = this.opts.maxFollowers ?? MAX_FOLLOWERS_DEFAULT;
+    if (this.followers.size >= maxFollowers) {
+      return this.json(res, 429, { error: 'too many open event streams' });
+    }
+    res.writeHead(200, {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      // Disables proxy buffering for self-hosted gateways in front of the API.
+      'X-Accel-Buffering': 'no'
+    });
+    const follower = new MissionEventFollower({
+      res,
+      missionId: mission.id,
+      eventsPath: join(store.dir(mission.id), 'events.jsonl'),
+      afterSeq: after,
+      // Fresh load each poll: the state check must observe cross-process
+      // runners (a mission owned by another process still terminates here).
+      loadState: () => store.load(mission.id)?.state ?? null,
+      limits: resolveFollowLimits(this.opts.follow),
+      onDone: f => { this.followers.delete(f); }
+    });
+    this.followers.add(follower);
+    follower.start(mission.state);
   }
 }

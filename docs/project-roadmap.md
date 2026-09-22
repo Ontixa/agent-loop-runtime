@@ -26,7 +26,7 @@
 
 - [ ] Scheduler fairness across repos; priority preemption rules
 - [ ] Resource-aware admission (CPU/memory pressure → defer missions)
-- [ ] Event stream tailing for cockpit (`GET /v1/missions/:id/events?follow`)
+- [x] Event stream tailing for cockpit (`GET /v1/missions/:id/events?follow`)
 
 ## v1.0 candidates
 
