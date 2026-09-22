@@ -18,8 +18,9 @@
 - [ ] Live-validation of codex/claude/devin adapters end-to-end; record per-adapter flag compatibility matrix
 - [ ] Planner schema hardening + scope-expansion approval flow exercised e2e
 - [ ] Chaos suite: kill runtime mid-gate, kill mid-push, locked worktree, disk-full — assert no false completion
-- [ ] Approval timeout + denied-approval e2e coverage (unit-covered, needs smoke)
-- [ ] Daemon auth token enforcement test; API contract freeze for ai-cli-editor
+- [x] Approval timeout + denied-approval e2e coverage (unit-covered, needs smoke)
+- [x] Daemon auth token enforcement test
+- [ ] API contract freeze for ai-cli-editor
 - [x] Worktree/branch GC command (`agentloop clean`) for finished missions
 
 ## v0.3 — multi-project operations
