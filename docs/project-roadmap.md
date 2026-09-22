@@ -20,7 +20,7 @@
 - [ ] Chaos suite: kill runtime mid-gate, kill mid-push, locked worktree, disk-full — assert no false completion
 - [ ] Approval timeout + denied-approval e2e coverage (unit-covered, needs smoke)
 - [ ] Daemon auth token enforcement test; API contract freeze for ai-cli-editor
-- [ ] Worktree/branch GC command (`agentloop clean`) for finished missions
+- [x] Worktree/branch GC command (`agentloop clean`) for finished missions
 
 ## v0.3 — multi-project operations
 

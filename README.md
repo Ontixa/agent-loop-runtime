@@ -103,6 +103,10 @@ agentloop missions --all
 agentloop status <missionId>
 agentloop logs <missionId>
 agentloop report <missionId>          # human + --json receipt: passes, gates, recovery audit, outcome
+
+# 6. Reclaim workspace (mission records are kept)
+agentloop clean --dry-run             # preview GC of terminal missions
+agentloop clean                       # remove worktrees + merged agentloop/<id> branches
 ```
 
 Choose the installed, authenticated CLI you intend to use (`codex` above is an

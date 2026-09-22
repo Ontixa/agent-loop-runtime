@@ -26,6 +26,7 @@ Each row was exercised by an automated test (`npm test` /
 | Daemon restart with operator-paused mission | NOT auto-resumed | ✔ | pause reason in `stateHistory` | scheduler requeue logic |
 | Daemon restart with shutdown-paused mission | auto-resumed (reason starts with `shutdown`) | ✔ | — | scheduler requeue logic |
 | Two missions in same repo | `maxConcurrentMissionsPerRepo` serialized | ✔ | — | scheduler tests |
+| `agentloop clean` on dirty worktree / unmerged branch / orphan or corrupt record | skipped unless `--force`; never removed | ✔ | worktree + branch preserved | clean-command › dirty / unmerged / orphan / corrupt |
 
 ## Windows transport and invocation admission
 

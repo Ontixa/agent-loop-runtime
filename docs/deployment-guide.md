@@ -92,7 +92,7 @@ daemon's actual URL from the status file. IPv6 literal URLs use brackets.
 | Mission stuck `waiting_for_approval` | `agentloop status <id>` → `agentloop approve <id> <approvalId>` or let `approvalTimeoutMs` → `blocked` |
 | Runtime killed mid-mission | Restart / `agentloop resume <id>` — runner heartbeat staleness → `stale` → `prepared` |
 | Mission `blocked` | Read `mission.json` outcome + events; fix cause; create a new mission |
-| Worktree cleanup | Missions keep `agentloop/<id>` branches by default; `git worktree remove .agentloop/worktrees/<id>` + `git branch -D agentloop/<id>` when done |
+| Worktree cleanup | `agentloop clean` removes worktrees + merged `agentloop/<id>` branches of terminal missions (`--dry-run` preview, `--force` for dirty/unmerged, `--keep-branch`, `--older-than 7d`); mission records under `.agentloop/missions/` are kept |
 | Log growth | Agent logs bounded per-invocation under mission dir; `agentloop logs <id>` tails them |
 
 ## Upgrading from Qwen Loop
