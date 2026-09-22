@@ -7,7 +7,9 @@ function probe(mode: string) {
   const result = spawnSync(process.execPath, [
     fileURLToPath(new URL('../../node_modules/tsx/dist/cli.mjs', import.meta.url)),
     fileURLToPath(new URL('./fixtures/file-lock-probe.ts', import.meta.url)), mode
-  ], { encoding: 'utf8', timeout: 20_000, windowsHide: true });
+  // 60s: the probe subprocess carries a cold tsx start; slow CI hosts have
+  // exceeded the old 20s bound without any lock logic being at fault.
+  ], { encoding: 'utf8', timeout: 60_000, windowsHide: true });
   // External bound also contains a broken retry loop; phases distinguish
   // loader/setup/attempt/cleanup failures without printing credentials.
   if (result.error) assert.fail(`probe ${mode}: ${result.error.message}\n${result.stderr}\n${result.stdout}`);
@@ -33,6 +35,13 @@ for (const mode of ['stat-eperm', 'read-eperm', 'unlink-eperm', 'stat-enoent', '
 }
 test('stale lock from an exited child can be recovered', () => {
   const result = probe('dead');
+  assert.equal(result.entered, true);
+  assert.equal(result.error, undefined);
+});
+// A SIGKILL can orphan a lock seconds old — recovery must not wait out a
+// staleness window for a provably dead owner (found via chaos-mid-gate).
+test('fresh lock from an exited child is reclaimed without waiting', () => {
+  const result = probe('fresh-dead');
   assert.equal(result.entered, true);
   assert.equal(result.error, undefined);
 });

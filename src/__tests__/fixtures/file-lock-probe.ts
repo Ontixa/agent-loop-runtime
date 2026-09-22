@@ -20,8 +20,12 @@ let preserved = false;
 let freeAcquired = false;
 const attempt = () => {
   phase('attempt-start');
+  // 'fresh-dead' pairs a young lock with a huge staleMs: pre-fix code would
+  // refuse to reclaim inside the 75ms window; the fixed path ignores age for
+  // a confirmed-dead owner. 'fresh-live' still proves a live young owner is
+  // never touched.
   try { withFileLock(path, () => { entered = true; }, {
-    staleMs: mode === 'fresh-live' ? 1_000_000_000 : 1,
+    staleMs: (mode === 'fresh-live' || mode === 'fresh-dead') ? 1_000_000_000 : 1,
     timeoutMs: mode === 'zero-timeout' ? 0 : 75
   }); }
   catch (e) { error = (e as NodeJS.ErrnoException).code ?? (e as Error).name; }
@@ -56,7 +60,10 @@ try {
     const raw = mode === 'malformed' ? '{incomplete' : JSON.stringify({ ...owner,
       ...(mode === 'invalid-pid' ? { pid: 0 } : {}),
       ...(mode === 'invalid-nonce' ? { nonce: '' } : {}) });
-    fs.writeFileSync(path, raw); age();
+    fs.writeFileSync(path, raw);
+    // 'fresh-dead' keeps the lock young on purpose: a confirmed-dead owner is
+    // reclaimed without waiting out a staleness window (mid-SIGKILL recovery).
+    if (mode !== 'fresh-dead') age();
     if (mode === 'probe-eperm' || mode === 'probe-unknown') {
       process.kill = (() => { throw Object.assign(new Error('fixture probe'), { code: mode === 'probe-eperm' ? 'EPERM' : 'EINVAL' }); }) as typeof process.kill;
     }
