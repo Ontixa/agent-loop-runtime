@@ -14,9 +14,11 @@ import { performance } from 'node:perf_hooks';
  * atomic on both NTFS and POSIX filesystems.
  *
  * Cross-process mutation is serialized by a sibling lock file (created with
- * the exclusive 'wx' flag). Stale locks are reclaimable only when a valid
- * owner record's PID is reported absent. Unknown ownership fails closed.
- * Reclamation still has a filesystem check/unlink race; see the threat model.
+ * the exclusive 'wx' flag). A lock whose owner record carries a PID that is
+ * confirmed absent is reclaimed immediately — a dead process cannot still be
+ * mid-write, so lock age never delays recovery of a provably dead owner.
+ * Unknown or malformed ownership fails closed at any age. Reclamation still
+ * has a filesystem check/unlink race; see the threat model.
  */
 
 /** Ensure a directory exists (recursive). */
@@ -153,12 +155,13 @@ function deadOwner(raw: string): boolean {
 }
 
 /**
- * Acquire with exclusive creation. Age permits checking a dead owner, never
- * overriding a live/unknown one. Descriptors are closed before the callback;
- * exclusion does not rely on Windows open-handle deletion behavior. Identity
- * rereads reduce (but cannot eliminate) concurrent reclamation's unlink race.
+ * Acquire with exclusive creation. A recorded owner pid that is confirmed
+ * dead authorizes reclamation at any age; a live or unverifiable owner never
+ * does. Descriptors are closed before the callback; exclusion does not rely
+ * on Windows open-handle deletion behavior. Identity rereads reduce (but
+ * cannot eliminate) concurrent reclamation's unlink race.
  */
-function acquireLock(lockPath: string, timeoutMs: number, staleMs: number): LockContent {
+function acquireLock(lockPath: string, timeoutMs: number): LockContent {
   ensureDir(dirname(lockPath));
   const me: LockContent = { pid: process.pid, nonce: randomBytes(8).toString('hex'), at: new Date().toISOString() };
   const deadline = performance.now() + timeoutMs;
@@ -175,21 +178,21 @@ function acquireLock(lockPath: string, timeoutMs: number, staleMs: number): Lock
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'EEXIST') throw err;
 
-      // Contended: malformed records and permission/probe uncertainty never
-      // authorize deletion. Every retry reaches the common bounded backoff.
+      // Contended: a lock whose recorded owner pid is confirmed dead is
+      // reclaimed regardless of age — the writer is gone, so waiting staleMs
+      // would only stall crash recovery after a mid-section SIGKILL.
+      // Malformed records and permission/probe uncertainty never authorize
+      // deletion. Every retry reaches the common bounded backoff.
       try {
         const st = statSync(lockPath);
-        const ageMs = Date.now() - st.mtimeMs;
-        if (ageMs > staleMs) {
-          const raw = readFileSync(lockPath, 'utf-8');
-          if (deadOwner(raw)) {
-            const latest = readFileSync(lockPath, 'utf-8');
-            const current = statSync(lockPath);
-            if (latest === raw && st.dev === current.dev && st.ino === current.ino &&
-                st.size === current.size && st.mtimeMs === current.mtimeMs && st.ctimeMs === current.ctimeMs &&
-                performance.now() < deadline) {
-              unlinkSync(lockPath);
-            }
+        const raw = readFileSync(lockPath, 'utf-8');
+        if (deadOwner(raw)) {
+          const latest = readFileSync(lockPath, 'utf-8');
+          const current = statSync(lockPath);
+          if (latest === raw && st.dev === current.dev && st.ino === current.ino &&
+              st.size === current.size && st.mtimeMs === current.mtimeMs && st.ctimeMs === current.ctimeMs &&
+              performance.now() < deadline) {
+            unlinkSync(lockPath);
           }
         }
       } catch (error) {
@@ -215,7 +218,12 @@ function releaseLock(lockPath: string, me: LockContent): void {
 export interface FileLockOptions {
   /** Max wait to acquire the lock. Default 10s. */
   timeoutMs?: number;
-  /** Lock older than this with a dead owner may be broken. Default 30s. */
+  /**
+   * Accepted for compatibility and bounds-validated, but no longer consulted:
+   * a lock whose recorded owner pid is confirmed dead is reclaimed
+   * immediately — lock age never delays recovery of a provably dead owner.
+   * Live or unverifiable owners are never overridden at any age.
+   */
   staleMs?: number;
 }
 
@@ -230,7 +238,7 @@ export function withFileLock<T>(lockPath: string, fn: () => T, opts: FileLockOpt
   if (![timeoutMs, staleMs].every(value => Number.isFinite(value) && value >= 0)) {
     throw new RangeError('Lock timeoutMs and staleMs must be finite nonnegative numbers');
   }
-  const me = acquireLock(lockPath, timeoutMs, staleMs);
+  const me = acquireLock(lockPath, timeoutMs);
   try {
     return fn();
   } finally {
