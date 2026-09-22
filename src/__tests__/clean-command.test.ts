@@ -8,6 +8,7 @@ import { MissionStore } from '../mission/mission-store.js';
 import { createMission } from '../engine/mission-factory.js';
 import { createMissionWorktree, listMissionWorktrees } from '../git/worktree-manager.js';
 import { cleanRepo, parseDurationMs } from '../commands/clean-command.js';
+import { isPathInside, canonicalPath } from '../git/repo-inspector.js';
 import { isTerminal } from '../mission/state-machine.js';
 import { MissionState, AgentType } from '../types.js';
 import type { Mission, MissionSpec, AgentConfig } from '../types.js';
@@ -98,6 +99,28 @@ describe('parseDurationMs', () => {
   test('rejects malformed durations', () => {
     for (const bad of ['', 'abc', '10x', '-5d', 'd', '1..5h', 'NaN']) {
       assert.throws(() => parseDurationMs(bad), /Invalid duration/, bad);
+    }
+  });
+});
+
+describe('isPathInside', () => {
+  test('compares canonical forms — separators, case, and non-existent tails', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'alr-inside-'));
+    try {
+      const child = join(dir, 'a', 'b');
+      assert.equal(isPathInside(dir, child), true);
+      assert.equal(isPathInside(dir, join(dir, 'a', '..', 'a', 'b')), true);
+      assert.equal(isPathInside(dir, join(dir, '..', 'sibling')), false);
+      assert.equal(isPathInside(dir, dir), true);
+      // canonicalPath resolves a non-existent leaf through its existing ancestor
+      assert.equal(canonicalPath(child), join(canonicalPath(dir), 'a', 'b'));
+      if (process.platform === 'win32') {
+        // NTFS is case-insensitive: drive-letter and component case must not
+        // change containment (git and Node may disagree on lexical case)
+        assert.equal(isPathInside(dir.toUpperCase(), child.toLowerCase()), true);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
@@ -214,7 +237,8 @@ describeGit('cleanRepo', () => {
   test('worktree without a mission record is reported, not removed', async () => {
     const orphan = await createMissionWorktree(repo, 'msn-orphan-test', sha);
     const report = await cleanRepo(repo);
-    assert.ok(report.skipped.some(s => s.worktreePath === orphan.path && s.reason.includes('no mission record')));
+    // git reports the canonical path (long form on Windows) — the sweep emits canonical too
+    assert.ok(report.skipped.some(s => s.worktreePath === canonicalPath(orphan.path) && s.reason.includes('no mission record')));
     assert.equal(existsSync(orphan.path), true);
     git(['worktree', 'remove', '--force', orphan.path]);
     git(['branch', '-D', 'agentloop/msn-orphan-test']);

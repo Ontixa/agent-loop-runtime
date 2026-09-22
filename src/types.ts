@@ -584,6 +584,20 @@ export interface RuntimeConfig {
     token?: string;
     /** Explicit CORS origins allowed to call the API from a browser. Default: none. */
     corsOrigins?: string[];
+    /**
+     * Bounds for `GET /v1/missions/:id/events?follow` NDJSON tails.
+     * Unset fields fall back to the defaults in daemon/event-follow.ts.
+     */
+    eventFollow?: {
+      /** Event-log poll cadence, ms. Default 500. */
+      pollMs?: number;
+      /** Keepalive meta-line cadence, ms. Default 15000. */
+      heartbeatMs?: number;
+      /** Hard lifetime cap per stream, ms. Default 30m. */
+      maxDurationMs?: number;
+      /** Max concurrent follow streams. Default 32. */
+      maxConnections?: number;
+    };
   };
 }
 

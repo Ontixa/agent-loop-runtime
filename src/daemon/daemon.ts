@@ -41,6 +41,8 @@ export class Daemon {
       port: cfg.port ?? 3210,
       token: cfg.token ?? process.env.AGENTLOOP_API_TOKEN,
       corsOrigins: cfg.corsOrigins,
+      follow: cfg.eventFollow,
+      maxFollowers: cfg.eventFollow?.maxConnections,
       repos: this.stores,
       scheduler: opts.scheduler,
       version: opts.version,

@@ -5,7 +5,7 @@ import { MissionStore } from '../mission/mission-store.js';
 import { isTerminal } from '../mission/state-machine.js';
 import { listMissionWorktrees, removeMissionWorktree, WORKTREES_DIR } from '../git/worktree-manager.js';
 import { gitSep, gitTry, GitOutputLimitError } from '../git/git-runner.js';
-import { inspectRepo, isPathInside } from '../git/repo-inspector.js';
+import { inspectRepo, isPathInside, canonicalPath } from '../git/repo-inspector.js';
 import type { Mission } from '../types.js';
 
 /**
@@ -149,6 +149,10 @@ export async function cleanRepo(repoRootInput: string, opts: {
 
   const store = new MissionStore(repoRoot);
   const worktreesRoot = join(repoRoot, WORKTREES_DIR);
+  // Canonical form for identity comparisons — git-reported worktree paths are
+  // canonicalized by git while recorded paths may carry 8.3 aliases or a
+  // different drive-letter case (Windows), so compare canonical forms only.
+  const worktreesRootCanonical = canonicalPath(worktreesRoot);
   const cutoffMs = opts.olderThanMs !== undefined ? Date.now() - opts.olderThanMs : undefined;
 
   const all = store.list();
@@ -165,7 +169,7 @@ export async function cleanRepo(repoRootInput: string, opts: {
       continue;
     }
     const wtResolved = resolve(wtPath);
-    handledPaths.add(wtResolved);
+    handledPaths.add(canonicalPath(wtResolved));
 
     const terminalMs = terminalAtMs(m);
     if (cutoffMs !== undefined && (terminalMs === 0 || terminalMs > cutoffMs)) {
@@ -179,7 +183,7 @@ export async function cleanRepo(repoRootInput: string, opts: {
     }
 
     // Containment: the recorded path must live under .agentloop/worktrees/.
-    if (!isPathInside(worktreesRoot, wtResolved) || wtResolved === resolve(worktreesRoot)) {
+    if (!isPathInside(worktreesRoot, wtResolved) || canonicalPath(wtResolved) === worktreesRootCanonical) {
       report.skipped.push({
         missionId: m.id, worktreePath: wtResolved,
         reason: 'workspace path is outside .agentloop/worktrees — refusing to remove'
@@ -282,7 +286,7 @@ export async function cleanRepo(repoRootInput: string, opts: {
 
   // Orphan sweep: mission worktrees on disk that no terminal mission claimed.
   for (const wt of await listMissionWorktrees(repoRoot)) {
-    const p = resolve(wt.path);
+    const p = canonicalPath(wt.path);
     if (handledPaths.has(p)) continue;
     if (!isPathInside(worktreesRoot, p)) {
       report.skipped.push({ worktreePath: p, reason: 'worktree outside .agentloop/worktrees — not managed by clean' });
