@@ -1,6 +1,6 @@
 import { gitStdout, gitSep, GitError, GitOutputLimitError, type GitOutputOptions } from './git-runner.js';
-import { existsSync } from 'fs';
-import { resolve, sep } from 'path';
+import { existsSync, realpathSync } from 'fs';
+import { basename, dirname, join, resolve, sep } from 'path';
 
 /**
  * Repository inspection and pre-flight safety checks.
@@ -206,10 +206,47 @@ export async function preflightRepo(
   return { status, issues };
 }
 
-/** True if `path` is contained inside `root` (lexical check). */
+/**
+ * Canonical form of a path for identity/containment comparisons.
+ *
+ * Git canonicalizes every path it reports (e.g. `git worktree list`) through
+ * the filesystem, while paths built from `os.tmpdir()` or a caller's cwd may
+ * carry a different lexical form of the same location — on Windows notably an
+ * 8.3 short-name alias (`C:\Users\RUNNER~1\...` vs `C:\Users\runneradmin\...`)
+ * or a different drive-letter case. A purely lexical `resolve()` comparison
+ * misclassifies such paths, which for the worktree GC means either refusing a
+ * managed path or, worse, misidentifying it.
+ *
+ * `realpathSync.native` resolves symlinks, 8.3 aliases, and case to the
+ * on-disk form. A path that no longer exists (e.g. a removed worktree) is
+ * canonicalized through its nearest existing ancestor so comparisons stay
+ * consistent; the filesystem root is the guaranteed termination point.
+ */
+export function canonicalPath(path: string): string {
+  const tail: string[] = [];
+  let cur = resolve(path);
+  for (;;) {
+    try {
+      let real = realpathSync.native(cur);
+      for (let i = tail.length - 1; i >= 0; i--) real = join(real, tail[i]);
+      return real;
+    } catch {
+      const parent = dirname(cur);
+      if (parent === cur) return cur;
+      tail.push(basename(cur));
+      cur = parent;
+    }
+  }
+}
+
+/** True if `path` is contained inside `root` (canonical-path check). */
 export function isPathInside(root: string, path: string): boolean {
-  const r = resolve(root);
-  const p = resolve(path);
+  let r = canonicalPath(root);
+  let p = canonicalPath(path);
+  if (process.platform === 'win32') {
+    r = r.toLowerCase();
+    p = p.toLowerCase();
+  }
   if (p === r) return true;
   const prefix = r.endsWith(sep) ? r : r + sep;
   return p.startsWith(prefix);
