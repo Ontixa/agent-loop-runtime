@@ -17,7 +17,7 @@ TypeScript ESM project (`"type": "module"`), locally verified on Node 24.14.1, c
 | `src/mission/` | `state-machine`, `mission-store` (atomic persist + events), `receipt` |
 | `src/engine/` | `mission-factory`, `mission-runner`, `planner`, `task-graph`, `validation-gates`, `reviewer`, `scheduler`, `admission-control`, `recovery` |
 | `src/config/config-manager.ts` | `agentloop.config.json` load/validate + `qwen-loop.config.json` migration |
-| `src/daemon/` | `daemon` (lifecycle, stale sweep, signal handling), `control-api` (loopback HTTP v1) |
+| `src/daemon/` | `daemon` (lifecycle, stale sweep, signal handling), `control-api` (loopback HTTP v1 — frozen contract in docs/control-api-contract.md), `event-follow` (`?follow` NDJSON tail) |
 | `src/mcp/mcp-server.ts` | MCP tools over stdio |
 | `src/health/health.ts` | `agentloop health --json` report |
 | `src/util/` | `atomic-file` (tmp+rename writes), `redact` (secret scrubbing, bounded tails) |

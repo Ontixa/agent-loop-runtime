@@ -8,19 +8,19 @@
 - [x] Policy engine: command classification, protected paths, budgets
 - [x] Persistent human approvals (sticky per-mission)
 - [x] Validation gates from config; deterministic reviewer; bounded repair
-- [x] Adapters: qwen, codex, claude, devin, opencode, custom argv (+ gemini, aider untested)
+- [x] Adapters: qwen, codex, claude, devin, opencode, custom argv (+ gemini, aider argv-pinned only — verification tiers in docs/adapter-matrix.md)
 - [x] Daemon + loopback control API + MCP surface + health
 - [x] `agentloop` CLI + legacy config migration
 - [x] False-completion guards + fake-agent test suite
 
 ## v0.2 — hardening
 
-- [ ] Live-validation of codex/claude/devin adapters end-to-end; record per-adapter flag compatibility matrix
+- [ ] Live-validation of codex/claude/devin adapters end-to-end — flag compatibility matrix recorded (docs/adapter-matrix.md, pinned by adapter-contract.test.ts); real-CLI mission runs still pending
 - [x] Planner schema hardening + scope-expansion approval flow exercised e2e (`planner-schema.test.ts`, `scope-expansion.test.ts`, `scope-expansion-e2e.test.ts`)
 - [x] Chaos suite: kill runtime mid-gate (`chaos-mid-gate.test.ts`, found+fixed dead-owner lock reclaim), kill mid-push (`chaos-mid-push.test.ts`), kill mid repair-loop (`chaos-mid-repair.test.ts`), locked worktree/dead+live lock contention (`chaos-lock-contention.test.ts`), disk-full write faults (`chaos-persistence-faults.test.ts`) — all assert no false completion
 - [x] Approval timeout + denied-approval e2e coverage (unit-covered, needs smoke)
 - [x] Daemon auth token enforcement test
-- [ ] API contract freeze for ai-cli-editor
+- [x] API contract freeze for ai-cli-editor (docs/control-api-contract.md, pinned by control-api-contract.test.ts)
 - [x] Worktree/branch GC command (`agentloop clean`) for finished missions
 
 ## v0.3 — multi-project operations

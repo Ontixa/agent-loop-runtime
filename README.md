@@ -213,14 +213,17 @@ paths shown above when adding your own patterns. Use JSON without comments.
 
 | Adapter | Status |
 |---------|--------|
-| Qwen Code | contract-tested |
-| Codex CLI | contract-tested |
-| Claude Code | contract-tested |
-| Devin CLI | contract-tested |
-| OpenCode | contract-tested |
+| Qwen Code | contract-tested (argv-pinned) |
+| Codex CLI | contract-tested; flags help-verified at CLI 0.155.1 |
+| Claude Code | contract-tested (argv-pinned) |
+| Devin CLI | contract-tested; flags help-verified at CLI 3000.10.31 |
+| OpenCode | contract-tested (argv-pinned) |
 | Gemini CLI | adapter shipped (contract-tested; no live smoke on this machine) |
 | Aider | adapter shipped (contract-tested; no live smoke on this machine) |
 | Custom argv | contract-tested + e2e-verified — any CLI agent |
+
+Per-adapter argv/env/stdin conventions and verification tiers:
+[docs/adapter-matrix.md](docs/adapter-matrix.md).
 
 Codex uses `exec --sandbox workspace-write` instead of the legacy
 `--full-auto` alias, which is absent from Codex CLI `0.155.1` help.
@@ -279,7 +282,10 @@ agentloop health --json     # machine-readable runtime health
 
 The daemon recovers interrupted missions on start, enforces concurrency limits, and pauses (not kills) active missions on shutdown. The HTTP control API defaults to loopback and always requires a bearer token. Set `AGENTLOOP_API_TOKEN`, or use the generated credential in `.agentloop/daemon.json` after startup. Treat this file as secret; see [operator authentication and file permissions](docs/deployment-guide.md#control-api-v1-loopback).
 
-MCP tools: `list_missions`, `inspect_mission`, `create_mission`, `pause_mission`, `resume_mission`, `cancel_mission`, `list_approvals`. There is deliberately no "approve as human" tool — approvals stay with the operator.
+The frozen v1 HTTP contract (routes, envelopes, `?follow` NDJSON format, auth)
+for ai-cli-editor and other consumers: [docs/control-api-contract.md](docs/control-api-contract.md).
+
+MCP tools: `list_missions`, `inspect_mission`, `create_mission`, `pause_mission`, `resume_mission`, `cancel_mission`, `list_pending_approvals`. There is deliberately no "approve as human" tool — approvals stay with the operator.
 
 ## Migrating from Qwen Loop
 

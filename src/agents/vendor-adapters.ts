@@ -31,7 +31,7 @@ export class QwenAdapter extends CliAdapterBase {
       ? mergeArgs([], config, ctx)
       : mergeArgs([ctx.prompt, '--yolo', '-o', 'text'], config, ctx);
     if (config.model) args.push('-m', config.model);
-    return { command: config.command ?? 'qwen', args };
+    return { command: config.command ?? 'qwen', args, ...(ctx.env ? { env: ctx.env } : {}) };
   }
 }
 
@@ -46,7 +46,7 @@ export class CodexAdapter extends CliAdapterBase {
       ? mergeArgs([], config, ctx)
       : mergeArgs(['exec', '--sandbox', 'workspace-write', '--skip-git-repo-check', ctx.prompt], config, ctx);
     if (config.model) args.push('-m', config.model);
-    return { command: config.command ?? 'codex', args };
+    return { command: config.command ?? 'codex', args, ...(ctx.env ? { env: ctx.env } : {}) };
   }
 }
 
@@ -61,7 +61,7 @@ export class ClaudeAdapter extends CliAdapterBase {
       ? mergeArgs([], config, ctx)
       : mergeArgs(['-p', ctx.prompt, '--output-format', 'text', '--dangerously-skip-permissions'], config, ctx);
     if (config.model) args.push('--model', config.model);
-    return { command: config.command ?? 'claude', args };
+    return { command: config.command ?? 'claude', args, ...(ctx.env ? { env: ctx.env } : {}) };
   }
 }
 
@@ -80,7 +80,7 @@ export class DevinAdapter extends CliAdapterBase {
       ? mergeArgs([], config, ctx)
       : mergeArgs(['--print', ctx.prompt, '--permission-mode', 'accept-edits'], config, ctx);
     if (config.model) args.push('--model', config.model);
-    return { command: config.command ?? 'devin', args };
+    return { command: config.command ?? 'devin', args, ...(ctx.env ? { env: ctx.env } : {}) };
   }
 }
 
@@ -95,7 +95,7 @@ export class GeminiAdapter extends CliAdapterBase {
       ? mergeArgs([], config, ctx)
       : mergeArgs([ctx.prompt, '--yolo'], config, ctx);
     if (config.model) args.push('-m', config.model);
-    return { command: config.command ?? 'gemini', args };
+    return { command: config.command ?? 'gemini', args, ...(ctx.env ? { env: ctx.env } : {}) };
   }
 }
 
@@ -110,7 +110,7 @@ export class OpenCodeAdapter extends CliAdapterBase {
       ? mergeArgs([], config, ctx)
       : mergeArgs(['run', ctx.prompt], config, ctx);
     if (config.model) args.push('-m', config.model);
-    return { command: config.command ?? 'opencode', args };
+    return { command: config.command ?? 'opencode', args, ...(ctx.env ? { env: ctx.env } : {}) };
   }
 }
 
@@ -125,6 +125,6 @@ export class AiderAdapter extends CliAdapterBase {
       ? mergeArgs([], config, ctx)
       : mergeArgs(['--message', ctx.prompt, '--yes-always', '--no-auto-commits'], config, ctx);
     if (config.model) args.push('--model', config.model);
-    return { command: config.command ?? 'aider', args };
+    return { command: config.command ?? 'aider', args, ...(ctx.env ? { env: ctx.env } : {}) };
   }
 }
