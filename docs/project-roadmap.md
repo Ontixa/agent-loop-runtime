@@ -17,7 +17,7 @@
 
 - [ ] Live-validation of codex/claude/devin adapters end-to-end; record per-adapter flag compatibility matrix
 - [ ] Planner schema hardening + scope-expansion approval flow exercised e2e
-- [ ] Chaos suite: kill runtime mid-gate (done — `chaos-mid-gate.test.ts`, found+fixed dead-owner lock reclaim), kill mid-push, locked worktree, disk-full — assert no false completion
+- [x] Chaos suite: kill runtime mid-gate (`chaos-mid-gate.test.ts`, found+fixed dead-owner lock reclaim), kill mid-push (`chaos-mid-push.test.ts`), kill mid repair-loop (`chaos-mid-repair.test.ts`), locked worktree/dead+live lock contention (`chaos-lock-contention.test.ts`), disk-full write faults (`chaos-persistence-faults.test.ts`) — all assert no false completion
 - [x] Approval timeout + denied-approval e2e coverage (unit-covered, needs smoke)
 - [x] Daemon auth token enforcement test
 - [ ] API contract freeze for ai-cli-editor
