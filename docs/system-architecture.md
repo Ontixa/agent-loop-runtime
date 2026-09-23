@@ -12,7 +12,7 @@
                └──────────────┴───────┬───────────┘
                                       ▼
                             engine/scheduler.ts
-                    (global + per-repo concurrency limits)
+         (global + per-repo concurrency, fair ordering, host-pressure admission)
                                       │
         ┌─────────────────────────────┼──────────────────────────┐
         ▼                             ▼                          ▼
