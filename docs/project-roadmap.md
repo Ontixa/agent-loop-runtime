@@ -32,7 +32,7 @@
 ## v1.0 candidates
 
 - [ ] Signed execution receipts (ReasoningReceipt-compatible wrapper, no hard dep)
-- [ ] Maintenance-mission presets (dep updates, test coverage) with strict scopes
+- [x] Maintenance-mission presets (dep updates, test coverage) with strict scopes (`--preset`, `agentloop presets`, `docs/mission-presets.md`)
 - [ ] Optional self-task generation mode (off by default, budget-capped)
 - [ ] Unix socket / named pipe transport for control API
 

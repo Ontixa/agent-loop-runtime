@@ -442,6 +442,77 @@ export interface Policy {
 export type ResolvedPolicy = Policy;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Maintenance-mission presets
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// A preset is a named, strict-scope template for recurring maintenance work.
+// It is NOT a parallel permission system: at mission creation a preset resolves
+// into a MissionSpec plus a tightened Policy snapshot, and everything afterward
+// (validation gates, reviewer scope checks, scope-expansion approvals, budgets)
+// is enforced by the same machinery as a hand-written mission.
+//
+// Merge rules (see engine/mission-presets.ts):
+//  - budgets and remote-action modes can only TIGHTEN repo policy
+//    (min / stricter mode wins — a preset never widens authority);
+//  - the command envelope is exactly the preset's allowedCommands plus the
+//    argv of its required validation gates — the repo allowlist is not
+//    inherited by a preset mission;
+//  - protectedPaths / approvalRequiredCommands / dangerousCommandPatterns
+//    union onto repo policy (a preset may add prohibitions, never remove).
+/** A maintenance-mission preset (built-in or `presets` in agentloop.config.json) */
+export interface MissionPreset {
+  /** Kebab-case name; for config-defined presets the map key is authoritative */
+  name?: string;
+  /** Human-readable summary shown by `agentloop presets` */
+  description?: string;
+  /** Default objective — a positional CLI objective overrides it */
+  objective?: string;
+  /**
+   * Bounded path allowlist → `spec.scope`. Exact paths or directory prefixes;
+   * diffs touching anything else hit the scope-expansion approval gate.
+   */
+  scope?: string[];
+  /** Extra non-goals appended to the mission spec */
+  nonGoals?: string[];
+  /** Acceptance criteria shipped by the preset; CLI --criteria appends */
+  acceptanceCriteria?: string[];
+  /**
+   * Names into config `validationCommands` that MUST resolve — a missing gate
+   * fails preset resolution instead of silently skipping verification.
+   * Their argv is added to the command envelope so the gates can run.
+   */
+  requiredGates?: string[];
+  /** Deterministic task titles; without `planning` these ARE the task graph */
+  tasks?: string[];
+  /** Command allowlist for the mission (exact argv prefixes) */
+  allowedCommands?: string[][];
+  /** Extra repo-relative paths the mission may never touch */
+  protectedPaths?: string[];
+  /** Risk constraints carried into the spec (e.g. 'docs-only') */
+  riskConstraints?: string[];
+  /** Budget ceilings — only tighter-than-policy values take effect */
+  budget?: {
+    maxMissionMinutes?: number;
+    maxRepairPasses?: number;
+    maxAgentInvocations?: number;
+    maxDiffBytes?: number;
+    agentTimeoutMs?: number;
+  };
+  /** Approval posture — restrictive merge over repo policy */
+  approvals?: {
+    allowPush?: 'never' | 'approval' | 'always';
+    allowPullRequest?: 'never' | 'approval' | 'always';
+    allowLocalCommit?: boolean;
+    allowNetwork?: boolean;
+    approvalTimeoutMs?: number;
+    approvalRequiredCommands?: string[][];
+    dangerousCommandPatterns?: string[];
+  };
+  /** True → run the agent planner inside the runner; default false (preset tasks) */
+  planning?: boolean;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Agent adapter contract
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -594,6 +665,12 @@ export interface RuntimeConfig {
   projects?: ProjectConfig[];
   /** Optional default validation gate commands by name */
   validationCommands?: Record<string, string[]>;
+  /**
+   * Custom maintenance-mission presets, keyed by preset name. Entries merge
+   * with the built-in presets; a config entry of the same name shadows the
+   * built-in. See docs/mission-presets.md.
+   */
+  presets?: Record<string, MissionPreset>;
   /** Optional daemon overrides */
   daemon?: {
     host?: string;

@@ -5,12 +5,13 @@ import { createMission, prepareMission } from '../engine/mission-factory.js';
 import { MissionRunner } from '../engine/mission-runner.js';
 import { recoverMission } from '../engine/recovery.js';
 import { defaultPlan, maintenancePlan } from '../engine/planner.js';
+import { resolvePresetMission, PresetError } from '../engine/mission-presets.js';
 import { decideApproval, loadApprovals } from '../policy/approvals.js';
 import { loadPolicy } from '../policy/policy.js';
 import { ConfigManager } from '../config/config-manager.js';
 import { isTerminal } from '../mission/state-machine.js';
 import { MissionState, AgentType } from '../types.js';
-import type { MissionSpec, AgentConfig } from '../types.js';
+import type { MissionSpec, AgentConfig, Policy, TaskNode } from '../types.js';
 import { logger } from '../logger.js';
 
 /**
@@ -44,49 +45,97 @@ function repoConfig(repoPath: string) {
   }
 }
 
-export async function cmdRun(objective: string, opts: {
+export async function cmdRun(objective: string | undefined, opts: {
   criteria?: string[];
   agent?: string;
   repo?: string;
   inPlace?: boolean;
   approveInPlace?: boolean;
   maintenance?: boolean;
+  preset?: string;
   plan?: boolean;
   nonGoal?: string[];
   maxMinutes?: number;
 }): Promise<void> {
   const repoPath = opts.repo ?? process.cwd();
   const store = new MissionStore(repoPath);
-  const { policy } = loadPolicy(repoPath);
+  const { policy: repoPolicy } = loadPolicy(repoPath);
   const agent = resolveAgent(opts.agent, repoPath);
+  const config = repoConfig(repoPath);
 
-  const spec: MissionSpec = {
-    objective,
-    acceptanceCriteria: opts.criteria && opts.criteria.length > 0 ? opts.criteria : [],
-    nonGoals: opts.nonGoal
-  };
+  let spec: MissionSpec;
+  let policy: Policy = repoPolicy;
+  let kind: 'objective' | 'maintenance' = opts.maintenance ? 'maintenance' : 'objective';
+  let planning = opts.plan !== false && !opts.maintenance;
+  let plannerTasks: TaskNode[] | undefined;
+  let budgetOverride: { maxMissionMinutes: number } | undefined =
+    opts.maxMinutes ? { maxMissionMinutes: opts.maxMinutes } : undefined;
 
-  // Acceptance criteria are required — if the user gave none, derive a minimal
-  // set from configured validation commands so the gate still can't be gamed.
-  if (spec.acceptanceCriteria.length === 0) {
-    const vc = repoConfig(repoPath).validationCommands ?? {};
-    const derived = Object.keys(vc).map(k => `validation '${k}' passes`);
-    if (derived.length === 0) {
-      console.error(chalk.red('Mission needs acceptance criteria.'));
-      console.error('Pass --criteria "..." or configure validationCommands in agentloop.config.json.');
+  if (opts.preset) {
+    // Maintenance-mission preset: resolves into spec + a tightened policy
+    // snapshot. Presets are strict — budgets/modes only narrow repo policy,
+    // and the command envelope is the preset's allowlist plus its gate argv.
+    let resolved;
+    try {
+      resolved = resolvePresetMission({
+        name: opts.preset, config, policy: repoPolicy,
+        objective, criteria: opts.criteria, nonGoals: opts.nonGoal
+      });
+    } catch (err) {
+      if (err instanceof PresetError) {
+        console.error(chalk.red(err.message));
+        process.exitCode = 2;
+        return;
+      }
+      throw err;
+    }
+    spec = resolved.spec;
+    policy = resolved.policy;
+    kind = 'maintenance';
+    // --no-plan still wins over a preset's planning intent; without planning
+    // the preset's deterministic task list IS the graph.
+    planning = resolved.planning && opts.plan !== false;
+    plannerTasks = planning ? undefined : resolved.tasks;
+    if (opts.maxMinutes) {
+      budgetOverride = { maxMissionMinutes: Math.min(opts.maxMinutes, policy.maxMissionMinutes) };
+    }
+    console.log(`Preset ${chalk.cyan(resolved.preset.name)} (${resolved.preset.source}) — scope ${resolved.spec.scope?.length ?? 0} path(s), gates [${(resolved.spec.verificationCommands ?? []).join(', ') || 'all configured'}]`);
+    for (const w of resolved.warnings) console.warn(chalk.yellow(`  warn: ${w}`));
+  } else {
+    if (!objective || objective.trim() === '') {
+      console.error(chalk.red('Mission needs an objective (or pass --preset <name> — see `agentloop presets`).'));
       process.exitCode = 2;
       return;
     }
-    spec.acceptanceCriteria = derived;
+    spec = {
+      objective,
+      acceptanceCriteria: opts.criteria && opts.criteria.length > 0 ? opts.criteria : [],
+      nonGoals: opts.nonGoal
+    };
+
+    // Acceptance criteria are required — if the user gave none, derive a minimal
+    // set from configured validation commands so the gate still can't be gamed.
+    if (spec.acceptanceCriteria.length === 0) {
+      const vc = config.validationCommands ?? {};
+      const derived = Object.keys(vc).map(k => `validation '${k}' passes`);
+      if (derived.length === 0) {
+        console.error(chalk.red('Mission needs acceptance criteria.'));
+        console.error('Pass --criteria "..." or configure validationCommands in agentloop.config.json.');
+        process.exitCode = 2;
+        return;
+      }
+      spec.acceptanceCriteria = derived;
+    }
   }
 
   const mission = createMission({
     repoPath, spec, agent,
-    kind: opts.maintenance ? 'maintenance' : 'objective',
-    planning: opts.plan !== false && !opts.maintenance,
+    kind,
+    policy,
+    planning,
     workspaceMode: opts.inPlace ? 'in-place' : 'worktree',
     inPlaceApproved: opts.approveInPlace === true,
-    budget: opts.maxMinutes ? { maxMissionMinutes: opts.maxMinutes } : undefined
+    budget: budgetOverride
   }, store);
 
   console.log(`Mission ${chalk.cyan(mission.id)} created`);
@@ -94,11 +143,14 @@ export async function cmdRun(objective: string, opts: {
 
   // Preflight and allocate the workspace before any agent process is launched.
   // Agent planning is persisted and budgeted by the runner, under its lease.
-  let plannerTasks;
-  if (opts.plan === false) {
-    plannerTasks = defaultPlan();
-  } else if (opts.maintenance) {
-    plannerTasks = maintenancePlan(mission, { hasTests: true, hasDocs: true, largeFiles: [] });
+  if (plannerTasks === undefined) {
+    if (opts.plan === false) {
+      plannerTasks = defaultPlan();
+    } else if (opts.maintenance && !opts.preset) {
+      // A preset that opted into agent planning must not get the deterministic
+      // maintenance fallback — the runner's planning pass owns the graph.
+      plannerTasks = maintenancePlan(mission, { hasTests: true, hasDocs: true, largeFiles: [] });
+    }
   }
 
   try {

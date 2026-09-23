@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import { cmdInit, cmdDoctor, cmdMigrate } from './commands/setup-commands.js';
 import { cmdRun, cmdPause, cmdResume, cmdCancel, cmdApprove } from './commands/mission-commands.js';
 import { cmdMissions, cmdStatus, cmdLogs, cmdReport } from './commands/inspect-commands.js';
+import { cmdPresets } from './commands/preset-commands.js';
 import { cmdClean } from './commands/clean-command.js';
 import { collectHealth } from './health/health.js';
 import { MissionScheduler } from './engine/scheduler.js';
@@ -39,7 +40,7 @@ program
   .action((opts) => cmdDoctor({ json: opts.json }));
 
 program
-  .command('run <objective>')
+  .command('run [objective]')
   .description('Create and run a mission in the foreground')
   .option('-c, --criteria <criterion...>', 'Acceptance criteria (repeatable)')
   .option('-a, --agent <name>', 'Agent name or adapter type')
@@ -47,15 +48,24 @@ program
   .option('--in-place', 'Run in working tree instead of isolated worktree')
   .option('--approve-in-place', 'Explicit sign-off required by --in-place')
   .option('--maintenance', 'Bounded maintenance mission')
+  .option('--preset <name>', 'Maintenance-mission preset (list with `agentloop presets`)')
   .option('--no-plan', 'Skip agent planning, use default single pass')
   .option('--non-goal <goal...>', 'Explicit non-goals (repeatable)')
   .option('--max-minutes <n>', 'Mission wall-time budget override')
   .action((objective, opts) => cmdRun(objective, {
     criteria: opts.criteria, agent: opts.agent, repo: opts.repo,
     inPlace: opts.inPlace, approveInPlace: opts.approveInPlace,
-    maintenance: opts.maintenance, plan: opts.plan, nonGoal: opts.nonGoal,
+    maintenance: opts.maintenance, preset: opts.preset, plan: opts.plan,
+    nonGoal: opts.nonGoal,
     maxMinutes: opts.maxMinutes ? Number(opts.maxMinutes) : undefined
   }));
+
+program
+  .command('presets [name]')
+  .description('List mission presets, or inspect one resolved against this repo\'s policy')
+  .option('--json', 'Machine-readable output')
+  .option('-r, --repo <path>', 'Repository path (default: cwd)')
+  .action((name, opts) => cmdPresets(name, { json: opts.json, repo: opts.repo }));
 
 program
   .command('missions')
