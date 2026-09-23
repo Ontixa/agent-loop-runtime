@@ -88,6 +88,6 @@ export class CustomAdapter extends CliAdapterBase {
     }
     if (config.additionalArgs?.length) args.push(...config.additionalArgs);
 
-    return { command: config.command!, args };
+    return { command: config.command!, args, ...(ctx.env ? { env: ctx.env } : {}) };
   }
 }
