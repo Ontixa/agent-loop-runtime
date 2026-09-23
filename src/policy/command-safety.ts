@@ -121,6 +121,22 @@ export function classifyCommand(argv: string[], policy: Policy): CommandVerdict 
   return { risk: 'needs-approval', reason: 'not in allowedCommands policy' };
 }
 
+/**
+ * Check if a repo-relative path is inside a declared scope list. A scope entry
+ * covers an exact path match or anything beneath it — the entry is a directory
+ * prefix, so 'src' covers 'src/x' but never 'srcfoo/x' (a bare prefix match
+ * would let scope silently bleed into sibling names). This is the same
+ * matching rule the deterministic reviewer applies to `spec.scope` and to
+ * granted scope-expansion paths — keep both call sites on this implementation.
+ */
+export function pathInScope(relPath: string, scope: string[]): boolean {
+  const f = relPath.replace(/\\/g, '/');
+  return scope.some(s => {
+    const e = s.replace(/\\/g, '/');
+    return f === e || f.startsWith(e.endsWith('/') ? e : e + '/');
+  });
+}
+
 /** Check if a repo-relative path falls under protected paths (glob-lite). */
 export function isProtectedPath(relPath: string, protectedPaths: string[]): boolean {
   const norm = relPath.replace(/\\/g, '/');

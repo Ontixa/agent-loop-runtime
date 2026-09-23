@@ -228,6 +228,16 @@ export interface ReviewResult {
   verdict: 'approve' | 'request-changes' | 'reject';
   findings: string[];
   at: string;
+  /**
+   * Exact repo-relative paths the diff touched outside the approved envelope,
+   * not already covered by a granted scope-expansion approval. Structured so
+   * the runner can raise a scope-expansion gate bound to these precise paths;
+   * the human-readable duplicates live in `findings`.
+   */
+  scopeViolation?: {
+    protectedPaths: string[];
+    outOfScopePaths: string[];
+  };
 }
 
 /** One counted agent attempt: planning, execution, or repair. */
@@ -274,6 +284,12 @@ export interface ApprovalRequest {
    * only these exact argv values — a changed command or scope invalidates it.
    */
   commands?: string[][];
+  /**
+   * For `scope-expansion` gates: the exact repo-relative paths the decision
+   * widens the mission envelope by. Approving grants these paths (and their
+   * children when an entry is a directory prefix) — never anything else.
+   */
+  paths?: string[];
   /** Fingerprint of the mission's resolved policy at request time */
   policyHash?: string;
   /** Workspace the gated action targets */

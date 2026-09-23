@@ -38,7 +38,7 @@
 ## Data flow
 
 1. `agentloop run` → `mission-factory` preflights the repo (dirty/detached/unborn/collision), snapshots policy, creates worktree + branch `agentloop/<id>`, persists `created → prepared`.
-2. Planner (optional) turns the spec into a validated task DAG — planner output is untrusted and schema-checked; it cannot touch policy/budget.
+2. Planner (optional) turns the spec into a validated task DAG — planner output is untrusted and schema-checked (`PlanValidationError` lists every violation); it cannot touch policy/budget. A plan may *declare* needed paths/commands — declarations beyond the approved envelope pause on an exact-bound `scope-expansion` approval before any task executes (`engine/scope-expansion.ts`).
 3. Runner `stepExecute` → adapter spawns agent argv in the worktree via `process-supervisor` (bounded tail, streamed log file, timeout, cancel, tree-kill). Exit classifies to `success | nonzero | timeout | cancelled | spawn-error` — only `success` completes a task.
 4. `stepValidate` resolves gates from mission spec + `agentloop.config.json` `validationCommands`, classifies each argv through `command-safety`, executes allowed ones, collects `needsApproval` ones → `waiting_for_approval`. Persisted approved `commands` make re-validation run them (sticky approval).
 5. Deterministic reviewer inspects the diff (protected paths, size, leftover markers). Verdict drives bounded repair passes (`maxRepairPasses`) or completion.

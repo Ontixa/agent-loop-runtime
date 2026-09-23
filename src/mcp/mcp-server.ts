@@ -206,7 +206,12 @@ export class McpServer {
       usage: m.usage, outcome: m.outcome,
       lastRecovery: m.lastRecovery,
       pendingApprovals: m.approvals.filter(a => a.status === 'pending')
-        .map(a => ({ id: a.id, gate: a.gate, detail: a.detail })),
+        .map(a => ({
+          id: a.id, gate: a.gate, detail: a.detail,
+          // The exact expansion under decision — what approval would grant.
+          ...(a.paths ? { paths: a.paths } : {}),
+          ...(a.commands ? { commands: a.commands } : {})
+        })),
       createdAt: m.createdAt, updatedAt: m.updatedAt
     };
   }
