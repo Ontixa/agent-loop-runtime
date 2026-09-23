@@ -205,7 +205,12 @@ export class ControlApi {
       workspaceMode: m.workspace.mode,
       branch: m.workspace.branch,
       usage: m.usage,
-      pendingApprovals: m.approvals.filter(a => a.status === 'pending').map(a => ({ id: a.id, gate: a.gate, detail: a.detail })),
+      pendingApprovals: m.approvals.filter(a => a.status === 'pending').map(a => ({
+        id: a.id, gate: a.gate, detail: a.detail,
+        // The exact expansion under decision — what approval would grant.
+        ...(a.paths ? { paths: a.paths } : {}),
+        ...(a.commands ? { commands: a.commands } : {})
+      })),
       checkpoints: m.checkpoints.length,
       lastRecovery: m.lastRecovery,
       outcome: m.outcome,

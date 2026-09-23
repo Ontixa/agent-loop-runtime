@@ -12,7 +12,36 @@ import { validateTaskGraph, taskId, readyTasks } from './task-graph.js';
  */
 
 const MAX_PLAN_TASKS = 12;
+const MAX_PLAN_PATHS_PER_TASK = 40;
+const MAX_PLAN_PATHS_TOTAL = 100;
+const MAX_PLAN_COMMANDS_PER_TASK = 20;
+const MAX_PLAN_COMMANDS_TOTAL = 50;
+const MAX_PLAN_PATH_LEN = 512;
+const MAX_PLAN_ARGV_LEN = 2000;
 export const PLANNER_TIMEOUT_MS = 120_000;
+
+/**
+ * Structured planner-output rejection. `issues` lists EVERY violation found,
+ * in deterministic entry order — one throw reports the whole malformed plan,
+ * never a nondeterministic first-found failure.
+ */
+export class PlanValidationError extends Error {
+  constructor(public readonly issues: string[]) {
+    super(`invalid plan: ${issues.join('; ')}`);
+    this.name = 'PlanValidationError';
+    Object.setPrototypeOf(this, PlanValidationError.prototype);
+  }
+}
+
+/**
+ * Scope a plan entry may REQUEST. Requests are declarations, never grants —
+ * the runner compares them against the mission's approved envelope and gates
+ * any excess on a human scope-expansion decision.
+ */
+export interface PlanScopeRequest {
+  paths: string[];
+  commands: string[][];
+}
 
 /** Zero means no launch is permitted; evaluate immediately before spawn. */
 export function planningTimeoutMs(mission: Mission, now = Date.now()): number {
@@ -25,37 +54,133 @@ export function planningTimeoutMs(mission: Mission, now = Date.now()): number {
 interface RawPlanTask {
   title?: unknown;
   dependsOn?: unknown;
+  paths?: unknown;
+  commands?: unknown;
 }
 
-/** Validate raw planner JSON → TaskNode[]; throws on any violation. */
-export function validatePlan(raw: unknown, pass = 1): TaskNode[] {
-  if (!Array.isArray(raw)) {
-    throw new Error('planner output must be a JSON array');
+/**
+ * A declared path must be a clean repo-relative path: no absolute paths, no
+ * drive qualifiers, no traversal — the runtime never lets untrusted planner
+ * text point outside the worktree.
+ */
+function validPlanPath(p: unknown): p is string {
+  if (typeof p !== 'string' || p.trim() === '' || p.length > MAX_PLAN_PATH_LEN) return false;
+  const n = p.replace(/\\/g, '/');
+  if (n.includes('\0') || n.startsWith('/') || /^[A-Za-z]:/.test(n)) return false;
+  // '.' segments are rejected too — pure aliasing ('./src' vs 'src') that only
+  // makes declared paths diverge from diff paths. No legitimate use.
+  return !n.split('/').some(seg => seg === '..' || seg === '.');
+}
+
+/** Validate one entry's optional `paths` declaration; pushes issues. */
+function planPaths(entry: RawPlanTask, i: number, issues: string[]): string[] {
+  if (entry.paths === undefined) return [];
+  if (!Array.isArray(entry.paths)) {
+    issues.push(`plan entry ${i}: "paths" must be an array of repo-relative paths`);
+    return [];
   }
-  if (raw.length === 0) throw new Error('planner produced an empty plan');
+  if (entry.paths.length > MAX_PLAN_PATHS_PER_TASK) {
+    issues.push(`plan entry ${i}: "paths" has ${entry.paths.length} entries (max ${MAX_PLAN_PATHS_PER_TASK})`);
+    return [];
+  }
+  const paths: string[] = [];
+  for (const p of entry.paths) {
+    if (!validPlanPath(p)) {
+      issues.push(`plan entry ${i}: invalid path ${JSON.stringify(p)} — must be a clean repo-relative path`);
+      continue;
+    }
+    // Kept verbatim apart from separator normalization — scope matching is
+    // slash-based, and a trailing '/' is meaningful (directory intent).
+    paths.push(p.replace(/\\/g, '/'));
+  }
+  return paths;
+}
+
+/** Validate one entry's optional `commands` declaration; pushes issues. */
+function planCommands(entry: RawPlanTask, i: number, issues: string[]): string[][] {
+  if (entry.commands === undefined) return [];
+  if (!Array.isArray(entry.commands)) {
+    issues.push(`plan entry ${i}: "commands" must be an array of argv arrays`);
+    return [];
+  }
+  if (entry.commands.length > MAX_PLAN_COMMANDS_PER_TASK) {
+    issues.push(`plan entry ${i}: "commands" has ${entry.commands.length} entries (max ${MAX_PLAN_COMMANDS_PER_TASK})`);
+    return [];
+  }
+  const commands: string[][] = [];
+  for (const c of entry.commands) {
+    if (!Array.isArray(c) || c.length === 0 ||
+        !c.every(a => typeof a === 'string' && a.length > 0 && a.length <= MAX_PLAN_ARGV_LEN)) {
+      issues.push(`plan entry ${i}: command entries must be non-empty argv string arrays`);
+      continue;
+    }
+    commands.push(c as string[]);
+  }
+  return commands;
+}
+
+/**
+ * Validate raw planner JSON → tasks + declared scope requests. Throws
+ * PlanValidationError listing every violation found. Unknown entry fields are
+ * ignored — the codebase convention for untrusted input (policy files,
+ * config, mission records all tolerate extra keys); only `title`,
+ * `dependsOn`, `paths` and `commands` are interpreted, and the request fields
+ * can never grant authority — they only feed the scope-expansion gate.
+ */
+export function validatePlan(raw: unknown, pass = 1): { tasks: TaskNode[]; requests: PlanScopeRequest } {
+  if (!Array.isArray(raw)) {
+    throw new PlanValidationError(['planner output must be a JSON array']);
+  }
+  if (raw.length === 0) throw new PlanValidationError(['planner produced an empty plan']);
   if (raw.length > MAX_PLAN_TASKS) {
-    throw new Error(`planner produced ${raw.length} tasks (max ${MAX_PLAN_TASKS})`);
+    throw new PlanValidationError([`planner produced ${raw.length} tasks (max ${MAX_PLAN_TASKS})`]);
   }
 
-  // First pass: build ids
-  const tasks: TaskNode[] = raw.map((entry, i) => {
+  // First pass: per-entry shape + declared requests; collect every issue.
+  const issues: string[] = [];
+  const pathSet = new Set<string>();
+  const commandSet = new Map<string, string[]>();
+  const tasks: TaskNode[] = [];
+  for (const [i, entry] of raw.entries()) {
     const t = entry as RawPlanTask;
-    if (!t || typeof t !== 'object') throw new Error(`plan entry ${i} is not an object`);
+    if (!t || typeof t !== 'object' || Array.isArray(t)) {
+      issues.push(`plan entry ${i} is not an object`);
+      continue;
+    }
     if (typeof t.title !== 'string' || t.title.trim() === '') {
-      throw new Error(`plan entry ${i}: missing/invalid "title"`);
+      issues.push(`plan entry ${i}: missing/invalid "title"`);
+      continue;
     }
-    if (t.title.length > 2000) throw new Error(`plan entry ${i}: title too long`);
+    if (t.title.length > 2000) {
+      issues.push(`plan entry ${i}: title too long`);
+      continue;
+    }
     if (t.dependsOn !== undefined && !Array.isArray(t.dependsOn)) {
-      throw new Error(`plan entry ${i}: "dependsOn" must be an array`);
+      issues.push(`plan entry ${i}: "dependsOn" must be an array`);
+      continue;
     }
-    return {
+    for (const p of planPaths(t, i, issues)) pathSet.add(p);
+    for (const c of planCommands(t, i, issues)) commandSet.set(JSON.stringify(c), c);
+    tasks.push({
       id: taskId(),
       title: t.title.trim(),
       dependsOn: [] as string[],
       status: TaskStatus.PENDING,
       pass
-    };
-  });
+    });
+  }
+  if (pathSet.size > MAX_PLAN_PATHS_TOTAL) {
+    issues.push(`plan declares ${pathSet.size} distinct paths (max ${MAX_PLAN_PATHS_TOTAL})`);
+  }
+  if (commandSet.size > MAX_PLAN_COMMANDS_TOTAL) {
+    issues.push(`plan declares ${commandSet.size} distinct commands (max ${MAX_PLAN_COMMANDS_TOTAL})`);
+  }
+  const seenTitles = new Set<string>();
+  for (const t of tasks) {
+    if (seenTitles.has(t.title)) issues.push(`task title '${t.title.slice(0, 80)}' is duplicated — title-based dependencies would be ambiguous`);
+    seenTitles.add(t.title);
+  }
+  if (issues.length > 0) throw new PlanValidationError(issues);
 
   // Second pass: resolve dependsOn entries — they may reference titles or
   // 1-based indices (agents can't know our internal ids)
@@ -65,26 +190,26 @@ export function validatePlan(raw: unknown, pass = 1): TaskNode[] {
     for (const dep of deps) {
       if (typeof dep === 'number' && Number.isInteger(dep)) {
         const idx = dep - 1;
-        if (idx < 0 || idx >= tasks.length) throw new Error(`plan entry ${i}: bad dep index ${dep}`);
+        if (idx < 0 || idx >= tasks.length) throw new PlanValidationError([`plan entry ${i}: bad dep index ${dep}`]);
         tasks[i].dependsOn.push(tasks[idx].id);
       } else if (typeof dep === 'string') {
         const target = tasks.find(t => t.title === dep.trim());
-        if (!target) throw new Error(`plan entry ${i}: unknown dep '${dep}'`);
+        if (!target) throw new PlanValidationError([`plan entry ${i}: unknown dep '${dep}'`]);
         tasks[i].dependsOn.push(target.id);
       } else {
-        throw new Error(`plan entry ${i}: dep entries must be index or title`);
+        throw new PlanValidationError([`plan entry ${i}: dep entries must be index or title`]);
       }
     }
   });
 
   const errors = validateTaskGraph(tasks);
-  if (errors.length > 0) throw new Error(`invalid plan: ${errors.join('; ')}`);
+  if (errors.length > 0) throw new PlanValidationError(errors);
 
   // Sanity: the first runnable tasks must exist
   if (readyTasks(tasks).length === 0) {
-    throw new Error('plan has no runnable root task');
+    throw new PlanValidationError(['plan has no runnable root task']);
   }
-  return tasks;
+  return { tasks, requests: { paths: [...pathSet], commands: [...commandSet.values()] } };
 }
 
 /** Default deterministic plan: a single implementation task. */
@@ -126,9 +251,13 @@ export function plannerPrompt(mission: Mission): string {
     `Acceptance criteria: ${spec.acceptanceCriteria.join('; ')}`,
     spec.riskConstraints?.length ? `Risk constraints: ${spec.riskConstraints.join(', ')}` : '',
     '',
-    'Schema: [{"title": "short imperative task", "dependsOn": [<1-based indices of earlier tasks>]}]',
+    'Schema: [{"title": "short imperative task", "dependsOn": [<1-based indices of earlier tasks>],',
+    '  "paths": ["repo/relative paths this task will modify"],',
+    '  "commands": [["argv", "arrays", "it must run"]]}]   // paths/commands optional',
     'Rules: tasks must be ordered; dependencies refer to earlier entries only;',
-    'do not include deployment, publishing, or policy changes as tasks.'
+    'do not include deployment, publishing, or policy changes as tasks.',
+    'Declared paths/commands outside the approved mission scope pause for a human',
+    'scope-expansion decision; undeclared expansion is rejected at review.'
   ].filter(Boolean).join('\n');
 }
 
@@ -148,10 +277,13 @@ export function extractJsonArray(text: string): unknown | null {
 /**
  * Interpret a recorded planner result. Spawning belongs exclusively to the
  * mission runner so planning cannot bypass ownership, budget, or recovery.
+ * `requests` carries the plan's declared scope needs ONLY when the plan came
+ * from the agent and validated cleanly — fallback output never carries
+ * requests, so a malformed plan cannot smuggle a scope grant through one.
  */
 export function planFromResult(
   result: AgentInvocationResult
-): { tasks: TaskNode[]; source: 'agent' | 'fallback'; error?: string } {
+): { tasks: TaskNode[]; source: 'agent' | 'fallback'; error?: string; requests?: PlanScopeRequest } {
   try {
     if (result.exitKind !== 'success') {
       return { tasks: defaultPlan(), source: 'fallback', error: result.exitKind };
@@ -162,10 +294,12 @@ export function planFromResult(
       return { tasks: defaultPlan(), source: 'fallback', error: 'no JSON in planner output' };
     }
 
-    const tasks = validatePlan(raw);
-    return { tasks, source: 'agent' };
+    const { tasks, requests } = validatePlan(raw);
+    return { tasks, source: 'agent', requests };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = err instanceof PlanValidationError
+      ? err.issues.join('; ')
+      : err instanceof Error ? err.message : String(err);
     return { tasks: defaultPlan(), source: 'fallback', error: msg };
   }
 }

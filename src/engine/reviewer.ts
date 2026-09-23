@@ -1,6 +1,6 @@
 import { gitStdout, GitOutputLimitError } from '../git/git-runner.js';
 import { changedFilesStrict, diffSummary } from '../git/repo-inspector.js';
-import { isProtectedPath } from '../policy/command-safety.js';
+import { isProtectedPath, pathInScope } from '../policy/command-safety.js';
 import type { Mission, ReviewResult } from '../types.js';
 import { redactSecrets } from '../util/redact.js';
 import { logger } from '../logger.js';
@@ -16,18 +16,30 @@ import { logger } from '../logger.js';
 
 const MAX_DIFF_FOR_SCAN = 512 * 1024;
 
-/** Patterns in diffs that warrant a finding (secret leakage, runtime tampering). */
+/**
+ * Patterns in diffs that warrant a finding (secret leakage, runtime tampering).
+ * `^\+(?!\+\+)` matches added CONTENT lines only — the `+++ b/<path>` header
+ * is a path, not added content. Path-based findings belong to the scope check:
+ * without this, granting a protected path (e.g. agentloop.policy.json) could
+ * never resolve — its own diff header would keep the finding alive forever.
+ */
 const SUSPICIOUS_DIFF_PATTERNS: Array<{ re: RegExp; finding: string }> = [
-  { re: /^\+.*(ghp_|gho_|sk-ant-|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY)/m, finding: 'possible secret committed in diff' },
-  { re: /^\+.*agentloop\.(config|policy)\.json/m, finding: 'diff references runtime config/policy' },
-  { re: /^\+.*(curl|wget|iwr)\b.*\|.*\b(sh|bash|ps1)\b/m, finding: 'remote script piping added' },
-  { re: /^\+.*process\.env\.[A-Z_]*(KEY|TOKEN|SECRET|PASSWORD)/m, finding: 'env secret access added' }
+  { re: /^\+(?!\+\+).*(ghp_|gho_|sk-ant-|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY)/m, finding: 'possible secret committed in diff' },
+  { re: /^\+(?!\+\+).*agentloop\.(config|policy)\.json/m, finding: 'diff references runtime config/policy' },
+  { re: /^\+(?!\+\+).*(curl|wget|iwr)\b.*\|.*\b(sh|bash|ps1)\b/m, finding: 'remote script piping added' },
+  { re: /^\+(?!\+\+).*process\.env\.[A-Z_]*(KEY|TOKEN|SECRET|PASSWORD)/m, finding: 'env secret access added' }
 ];
 
 export interface DeterministicReviewInput {
   worktreePath: string;
   baseSha: string;
   mission: Mission;
+  /**
+   * Repo-relative paths an approved scope-expansion decision widened the
+   * mission envelope by. Granted paths are legitimate scope — they produce no
+   * findings. Only UNCOVERED violations surface in `scopeViolation`.
+   */
+  grantedPaths?: string[];
 }
 
 /** Run deterministic review of the mission diff. Never throws. */
@@ -35,25 +47,33 @@ export async function deterministicReview(input: DeterministicReviewInput): Prom
   const findings: string[] = [];
   const { worktreePath, baseSha, mission } = input;
   const policy = mission.policy;
+  const granted = input.grantedPaths ?? [];
+  const isGranted = (f: string) => granted.length > 0 && pathInScope(f, granted);
 
   try {
     const files = await changedFilesStrict(worktreePath, baseSha);
 
-    // Protected paths — hard violation
-    const protectedHits = files.filter(f => isProtectedPath(f, policy.protectedPaths));
+    // Protected paths — hard violation unless a scope-expansion approval
+    // explicitly granted this exact path (operator override is on the record).
+    const protectedHits = files.filter(f => isProtectedPath(f, policy.protectedPaths) && !isGranted(f));
     for (const f of protectedHits) {
       findings.push(`protected path modified: ${f}`);
     }
 
     // Scope check: if spec.scope is set, flag out-of-scope files (advisory → finding)
-    if (mission.spec.scope && mission.spec.scope.length > 0) {
-      const inScope = (f: string) => mission.spec.scope!.some(s =>
-        f === s || f.startsWith(s.endsWith('/') ? s : s + '/') || f.startsWith(s));
-      const outOfScope = files.filter(f => !inScope(f) && !isProtectedPath(f, policy.protectedPaths));
+    const scope = mission.spec.scope ?? [];
+    const grantedScope = [...scope, ...granted];
+    let outOfScope: string[] = [];
+    if (scope.length > 0) {
+      outOfScope = files.filter(f =>
+        !pathInScope(f, grantedScope) && !isProtectedPath(f, policy.protectedPaths));
       if (outOfScope.length > 0) {
         findings.push(`out-of-scope files modified: ${outOfScope.slice(0, 10).join(', ')}${outOfScope.length > 10 ? ` (+${outOfScope.length - 10} more)` : ''}`);
       }
     }
+    const scopeViolation = (protectedHits.length > 0 || outOfScope.length > 0)
+      ? { protectedPaths: protectedHits, outOfScopePaths: outOfScope }
+      : undefined;
 
     // Diff-size budget
     const stat = await diffSummary(worktreePath, baseSha);
@@ -91,7 +111,8 @@ export async function deterministicReview(input: DeterministicReviewInput): Prom
       verdict: findings.some(f => f.startsWith('protected path')) ? 'reject'
         : findings.length > 0 ? 'request-changes' : 'approve',
       findings,
-      at: new Date().toISOString()
+      at: new Date().toISOString(),
+      ...(scopeViolation ? { scopeViolation } : {})
     };
   } catch (err) {
     return {

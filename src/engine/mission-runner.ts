@@ -15,13 +15,15 @@ import { checkpointCommit } from '../git/worktree-manager.js';
 import { diffSummary } from '../git/repo-inspector.js';
 import { GitOutputLimitError } from '../git/git-runner.js';
 import {
-  requestApproval, loadApprovals, policyHash as computePolicyHash, verifyDecision
+  requestApproval, loadApprovals, policyHash as computePolicyHash, verifyDecision,
+  grantedScopePaths
 } from '../policy/approvals.js';
 import { writeReceipt } from '../mission/receipt.js';
 import { boundTail } from '../util/redact.js';
 import { pidAlive } from './recovery.js';
 import { logger } from '../logger.js';
 import { interruptPlanning, planFromResult, plannerPrompt, planningTimeoutMs } from './planner.js';
+import { outstandingExpansion, expansionDetail } from './scope-expansion.js';
 
 /**
  * Mission runner — drives one mission through its lifecycle:
@@ -49,6 +51,8 @@ const HEARTBEAT_INTERVAL_MS = 10_000;
 const APPROVAL_POLL_MS = 5_000;
 const AGENT_LOG_TAIL = 64 * 1024;
 const STALE_AFTER_MS = 45_000;
+/** Bound on paths one scope-expansion request may carry; excess re-gates. */
+const MAX_GRANT_PATHS = 500;
 
 /**
  * Combine abort signals without relying on AbortSignal.any (Node ≥18.17).
@@ -446,6 +450,23 @@ export class MissionRunner {
     if (cancelled) {
       if (mission.state !== MissionState.CANCELLED) this.store.transition(mission, MissionState.CANCELLED, 'planner cancelled');
       this.finalizeOutcome(mission.id, 'cancelled', 'Planner invocation cancelled');
+      return;
+    }
+
+    // A resolved agent plan may declare scope needs beyond the approved
+    // envelope (paths outside spec.scope, commands policy does not allow).
+    // Gate the exact uncovered remainder on a human scope-expansion decision
+    // BEFORE any task executes — the envelope never widens silently. Denial
+    // or timeout blocks the mission; approval covers only what was listed.
+    if (plan.requests) {
+      const expansion = outstandingExpansion(mission, plan.requests,
+        loadApprovals(this.store.dir(mission.id)));
+      if (expansion.paths.length > 0 || expansion.commands.length > 0) {
+        this.raiseApproval(mission, 'scope-expansion',
+          expansionDetail('Plan requests scope beyond the approved envelope', expansion),
+          expansion.commands.length > 0 ? expansion.commands : undefined,
+          expansion.paths.length > 0 ? expansion.paths : undefined);
+      }
     }
   }
 
@@ -464,8 +485,14 @@ export class MissionRunner {
     });
 
     // Approvals decided for this mission and bound to its policy snapshot.
-    const approved = loadApprovals(this.store.dir(mission.id))
-      .filter(a => a.status === 'approved');
+    const ledger = loadApprovals(this.store.dir(mission.id));
+    const approved = ledger.filter(a => a.status === 'approved');
+    // Paths widened by verified, bound, approved scope-expansion decisions —
+    // the only authority that can grow the envelope mid-mission.
+    const grantedPaths = grantedScopePaths(ledger, {
+      policyHash: mission.policyHash ?? computePolicyHash(mission.policy),
+      worktree: mission.workspace.path
+    });
 
     const { results, allPassed, needsApproval } = await runValidationGates(
       allGates, mission.workspace.path, mission.policy, { approved }
@@ -493,11 +520,12 @@ export class MissionRunner {
       return;
     }
 
-    // Review phase
+    // Review phase — granted scope-expansion paths are already legitimate.
     const review = await deterministicReview({
       worktreePath: mission.workspace.path,
       baseSha: mission.repository.baseSha,
-      mission
+      mission,
+      grantedPaths
     });
     this.store.mutate(mission.id, m => {
       const p = m.passes.at(-1);
@@ -506,6 +534,27 @@ export class MissionRunner {
     this.store.emit(mission.id, 'review_finished', {
       verdict: review.verdict, findings: review.findings.length
     });
+
+    // Out-of-envelope work (protected paths or files outside spec.scope)
+    // pauses for a human scope-expansion decision bound to the EXACT paths —
+    // approving widens the envelope by only those paths; denial or timeout
+    // leaves the envelope unchanged and blocks the mission (fail closed).
+    const violations = review.scopeViolation;
+    if (violations && (violations.protectedPaths.length > 0 || violations.outOfScopePaths.length > 0)) {
+      const paths = [...violations.protectedPaths, ...violations.outOfScopePaths];
+      const capped = paths.slice(0, MAX_GRANT_PATHS);
+      const parts: string[] = [];
+      if (violations.protectedPaths.length > 0) {
+        parts.push(`protected paths modified: ${violations.protectedPaths.join(', ')}`);
+      }
+      if (violations.outOfScopePaths.length > 0) {
+        parts.push(`out-of-scope files modified: ${violations.outOfScopePaths.join(', ')}`);
+      }
+      const detail = `${parts.join('; ')} — approving widens the mission envelope by exactly these paths` +
+        (paths.length > capped.length ? `; request bounded to the first ${MAX_GRANT_PATHS} — the rest re-gate on re-review` : '');
+      this.raiseApproval(mission, 'scope-expansion', detail, undefined, capped);
+      return;
+    }
 
     // Outcome decision. With configured gates: all must pass. With zero gates:
     // nothing verifies failed work — require every task to have succeeded
@@ -833,12 +882,14 @@ export class MissionRunner {
     mission: Mission,
     gate: import('../types.js').ApprovalRequest['gate'],
     detail: string,
-    commands?: string[][]
+    commands?: string[][],
+    paths?: string[]
   ): void {
     const dir = this.store.dir(mission.id);
     const req = requestApproval(dir, mission.id, gate, detail, commands, {
       policyHash: mission.policyHash ?? computePolicyHash(mission.policy),
-      worktree: mission.workspace.path
+      worktree: mission.workspace.path,
+      paths
     });
     this.store.mutate(mission.id, m => { m.approvals = loadApprovals(dir); });
     this.store.emit(mission.id, 'approval_required', { gate, detail: detail.slice(0, 300), approvalId: req.id });

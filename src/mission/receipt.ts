@@ -72,6 +72,10 @@ export interface MissionReceipt {
     status: string;
     decidedBy?: string;
     decidedAt?: string;
+    /** Exact argv a command gate covered, when recorded */
+    commands?: string[][];
+    /** Exact repo-relative paths a scope-expansion gate widened, when recorded */
+    paths?: string[];
   }>;
   usage: Mission['usage'];
   /** Most recent crash-recovery audit, if any */
@@ -138,7 +142,9 @@ export function buildReceipt(mission: Mission): MissionReceipt {
       detail: a.detail,
       status: a.status,
       decidedBy: a.decidedBy,
-      decidedAt: a.decidedAt
+      decidedAt: a.decidedAt,
+      ...(a.commands ? { commands: a.commands } : {}),
+      ...(a.paths ? { paths: a.paths } : {})
     })),
     usage: mission.usage,
     lastRecovery: mission.lastRecovery,

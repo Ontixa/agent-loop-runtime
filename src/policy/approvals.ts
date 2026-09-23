@@ -2,6 +2,7 @@ import { join } from 'path';
 import { readJsonFile, writeJsonAtomic } from '../util/atomic-file.js';
 import { createHash, createHmac } from 'crypto';
 import type { ApprovalRequest, Policy } from '../types.js';
+import { pathInScope } from './command-safety.js';
 import { randomBytes } from 'crypto';
 
 /**
@@ -56,11 +57,12 @@ export function policyHash(policy: Policy): string {
   return createHash('sha256').update(stableStringify(policy)).digest('hex').slice(0, 16);
 }
 
-/** Fingerprint of an approval request for dedupe: gate + exact argv set + policy. */
-export function approvalFingerprint(a: Pick<ApprovalRequest, 'gate' | 'commands' | 'policyHash' | 'worktree'>): string {
+/** Fingerprint of an approval request for dedupe: gate + exact argv set + exact path set + policy. */
+export function approvalFingerprint(a: Pick<ApprovalRequest, 'gate' | 'commands' | 'paths' | 'policyHash' | 'worktree'>): string {
   const cmds = (a.commands ?? []).map(c => c.join('')).sort().join('|');
+  const paths = [...(a.paths ?? [])].sort().join('|');
   return createHash('sha256')
-    .update(`${a.gate}\n${cmds}\n${a.policyHash ?? ''}\n${a.worktree ?? ''}`)
+    .update(`${a.gate}\n${cmds}\n${paths}\n${a.policyHash ?? ''}\n${a.worktree ?? ''}`)
     .digest('hex').slice(0, 16);
 }
 
@@ -101,6 +103,41 @@ export function approvalCoversArgv(req: ApprovalRequest, argv: string[]): boolea
 }
 
 /**
+ * True if `req` (an APPROVED scope-expansion decision) covers `path` — the
+ * granted entries act as scope prefixes, exactly like `spec.scope` matching.
+ * A grant for `src/new/` covers `src/new/file.ts`; it never covers `src/old/`.
+ */
+export function approvalCoversPath(req: ApprovalRequest, path: string): boolean {
+  if (req.status !== 'approved' || !req.paths || req.paths.length === 0) return false;
+  return pathInScope(path, req.paths);
+}
+
+/**
+ * Repo-relative paths an approved scope-expansion decision has widened the
+ * envelope by. Binding rules mirror gate coverage: the decision must be
+ * approved, carry `paths`, match the mission's policy fingerprint and worktree
+ * when those bindings were recorded, and pass signature verification when
+ * AGENTLOOP_APPROVAL_KEY is configured — a forged or unbound grant widens
+ * nothing.
+ */
+export function grantedScopePaths(
+  approvals: ApprovalRequest[],
+  binding: { policyHash?: string; worktree?: string }
+): string[] {
+  const granted = new Set<string>();
+  for (const a of approvals) {
+    if (a.gate !== 'scope-expansion' || a.status !== 'approved' || !a.paths) continue;
+    // A recorded binding must match exactly — when the mission cannot produce
+    // the same fingerprint/path the binding is unverifiable, so it fails closed.
+    if (a.policyHash !== undefined && a.policyHash !== binding.policyHash) continue;
+    if (a.worktree !== undefined && a.worktree !== binding.worktree) continue;
+    if (verifyDecision(a) !== 'ok') continue;
+    for (const p of a.paths) granted.add(p);
+  }
+  return [...granted];
+}
+
+/**
  * Raise a new pending approval gate. If an identical pending gate already
  * exists (same fingerprint), the existing request is returned instead of
  * duplicating — a mission re-driving after recovery must not pile up
@@ -112,11 +149,11 @@ export function requestApproval(
   gate: ApprovalRequest['gate'],
   detail: string,
   commands?: string[][],
-  context?: { policyHash?: string; worktree?: string }
+  context?: { policyHash?: string; worktree?: string; paths?: string[] }
 ): ApprovalRequest {
   const approvals = loadApprovals(missionDir);
-  const candidate: Pick<ApprovalRequest, 'gate' | 'commands' | 'policyHash' | 'worktree'> = {
-    gate, commands, policyHash: context?.policyHash, worktree: context?.worktree
+  const candidate: Pick<ApprovalRequest, 'gate' | 'commands' | 'paths' | 'policyHash' | 'worktree'> = {
+    gate, commands, paths: context?.paths, policyHash: context?.policyHash, worktree: context?.worktree
   };
   const fp = approvalFingerprint(candidate);
   const existing = approvals.find(a =>
@@ -130,6 +167,7 @@ export function requestApproval(
     gate,
     detail,
     ...(commands ? { commands } : {}),
+    ...(context?.paths ? { paths: context.paths } : {}),
     ...(context?.policyHash ? { policyHash: context.policyHash } : {}),
     ...(context?.worktree ? { worktree: context.worktree } : {}),
     status: 'pending',

@@ -1,7 +1,7 @@
 import { supervise } from '../supervisor/process-supervisor.js';
 import { toSpawnInvocation } from '../agents/cli-adapter-base.js';
 import { classifyCommand } from '../policy/command-safety.js';
-import { approvalCoversArgv, policyHash as computePolicyHash } from '../policy/approvals.js';
+import { approvalCoversArgv, policyHash as computePolicyHash, verifyDecision } from '../policy/approvals.js';
 import type { ApprovalRequest, GateResult, Policy } from '../types.js';
 import { boundTail } from '../util/redact.js';
 import { logger } from '../logger.js';
@@ -43,12 +43,15 @@ export async function runValidationGates(
   // Commands a human already approved for this mission run as allowed.
   // Binding rules: the approval must (a) be decided 'approved', (b) carry the
   // EXACT same argv — approving ["node","-e"] does not bless every `node -e`,
-  // and (c) be bound to the same policy fingerprint — a policy change or a
-  // different gated scope invalidates the earlier approval.
+  // (c) be bound to the same policy fingerprint — a policy change or a
+  // different gated scope invalidates the earlier approval — and (d) pass
+  // decision-signature verification when AGENTLOOP_APPROVAL_KEY is configured:
+  // a forged ledger entry is not a human decision, even at consumption time.
   const isApproved = (argv: string[]) =>
     (opts.approved ?? []).some(ap =>
       approvalCoversArgv(ap, argv) &&
-      (ap.policyHash === undefined || ap.policyHash === currentPolicyHash));
+      (ap.policyHash === undefined || ap.policyHash === currentPolicyHash) &&
+      verifyDecision(ap) === 'ok');
 
   for (const gate of gates) {
     const verdict = isApproved(gate.argv)

@@ -42,7 +42,20 @@ claim to prevent. Nothing below is aspirational — each line maps to code or a 
   it was shown, the mission id, the policy fingerprint, and the worktree.
   Approving `["node","-e"]` does not cover `["node","-e","rm()"]`.
   With `AGENTLOOP_APPROVAL_KEY` set, unsigned or bad-signature decisions are
-  rejected (`approval_unverified` → blocked).
+  rejected (`approval_unverified` → blocked) — both at the waiting step and
+  again when the decision is consumed.
+- **Scope expansion is explicit and exact.** The mission envelope —
+  `spec.scope` paths and `policy.allowedCommands` — is fixed at creation.
+  Planner output may *declare* paths/commands beyond it, and the diff may
+  *touch* paths beyond it (including `protectedPaths`); either way the
+  uncovered remainder pauses on a persisted `scope-expansion` approval bound
+  to the exact paths/argv. Approval widens the envelope by only the listed
+  items; denial or timeout fails closed (blocked) with the envelope unchanged,
+  and re-driving re-raises the gate. Unsigned/forged grants widen nothing.
+- **Planner output is schema-bound.** Only `title`/`dependsOn`/`paths`/
+  `commands` are interpreted; every violation is reported in a deterministic
+  issue list. Malformed plans fall back to a single deterministic task with
+  no declared requests — a broken plan cannot smuggle scope through fallback.
 - **In-place is a double flag.** `--in-place` alone is refused; both
   `--in-place` and `--approve-in-place` are required (enforced in
   `createMission`, not just the CLI).
