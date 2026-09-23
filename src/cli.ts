@@ -163,7 +163,10 @@ program
   .action(async (opts) => {
     const cfg = new ConfigManager();
     const dc = cfg.getConfig().daemon ?? {};
-    const scheduler = new MissionScheduler({});
+    // daemon.admission (host pressure thresholds) comes from the config file
+    // in the directory where `agentloop daemon` was started — same source as
+    // host/port/token, independent of per-repo configs.
+    const scheduler = new MissionScheduler({}, { admission: dc.admission });
     const daemon = new Daemon({
       repos: opts.repo ?? [process.cwd()],
       config: {

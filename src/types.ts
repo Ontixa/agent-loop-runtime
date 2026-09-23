@@ -546,6 +546,7 @@ export type RuntimeEventType =
   | 'mission_failed'
   | 'mission_cancelled'
   | 'mission_blocked'
+  | 'mission_deferred'
   | 'mission_stale'
   | 'runner_heartbeat'
   | 'runner_claimed'
@@ -613,6 +614,29 @@ export interface RuntimeConfig {
       maxDurationMs?: number;
       /** Max concurrent follow streams. Default 32. */
       maxConnections?: number;
+    };
+    /**
+     * Resource-aware admission: the daemon's scheduler defers starting new
+     * missions while the host is under load/memory pressure, recording a
+     * `mission_deferred` event on each queued mission. Defaults in
+     * engine/admission-control.ts; unset fields use them. The check runs on
+     * the daemon host regardless of which repo a mission belongs to.
+     */
+    admission?: {
+      /** Master switch. Default true. */
+      enabled?: boolean;
+      /**
+       * Defer while loadavg(1m) / logical CPUs exceeds this. Default 2.
+       * <= 0 disables the check. Inert on Windows (loadavg is always 0).
+       */
+      maxLoadPerCpu?: number;
+      /**
+       * Defer while freemem/totalmem is below this ratio (0..1).
+       * Default 0.05. <= 0 disables the check.
+       */
+      minFreeMemRatio?: number;
+      /** Re-sample interval while admission is deferred, ms. Default 30000. */
+      recheckMs?: number;
     };
   };
 }

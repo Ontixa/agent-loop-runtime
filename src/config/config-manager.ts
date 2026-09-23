@@ -146,6 +146,21 @@ export class ConfigManager {
         }
       }
     }
+    const admission = this.config.daemon?.admission;
+    if (admission) {
+      if (admission.enabled !== undefined && typeof admission.enabled !== 'boolean') {
+        errors.push('daemon.admission.enabled must be a boolean');
+      }
+      for (const key of ['maxLoadPerCpu', 'minFreeMemRatio', 'recheckMs'] as const) {
+        const v = admission[key];
+        if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v) || v < 0)) {
+          errors.push(`daemon.admission.${key} must be a non-negative number`);
+        }
+      }
+      if (typeof admission.minFreeMemRatio === 'number' && admission.minFreeMemRatio > 1) {
+        errors.push('daemon.admission.minFreeMemRatio must be between 0 and 1');
+      }
+    }
     return errors;
   }
 

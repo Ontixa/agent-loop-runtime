@@ -15,7 +15,7 @@ TypeScript ESM project (`"type": "module"`), locally verified on Node 24.14.1, c
 | `src/git/` | `git-runner` (argv allowlist), `repo-inspector` (safety checks), `worktree-manager` |
 | `src/policy/` | `policy` (schema/load/defaults), `command-safety` (classifier), `approvals` (persistent gates) |
 | `src/mission/` | `state-machine`, `mission-store` (atomic persist + events), `receipt` |
-| `src/engine/` | `mission-factory`, `mission-runner`, `planner`, `task-graph`, `validation-gates`, `reviewer`, `scheduler`, `recovery` |
+| `src/engine/` | `mission-factory`, `mission-runner`, `planner`, `task-graph`, `validation-gates`, `reviewer`, `scheduler`, `admission-control`, `recovery` |
 | `src/config/config-manager.ts` | `agentloop.config.json` load/validate + `qwen-loop.config.json` migration |
 | `src/daemon/` | `daemon` (lifecycle, stale sweep, signal handling), `control-api` (loopback HTTP v1) |
 | `src/mcp/mcp-server.ts` | MCP tools over stdio |
