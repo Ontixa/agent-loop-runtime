@@ -7,6 +7,12 @@
 
 export { MissionStore } from './mission/mission-store.js';
 export { createMission, prepareMission, MissionPreparationError } from './engine/mission-factory.js';
+export {
+  listPresets, getPreset, resolvePresetMission, validatePresetShape,
+  PresetError, PRESET_NAME_RE
+} from './engine/mission-presets.js';
+export type { PresetEntry, ResolvedPresetMission } from './engine/mission-presets.js';
+export { BUILTIN_PRESETS } from './engine/builtin-presets.js';
 export { MissionRunner } from './engine/mission-runner.js';
 export { MissionScheduler } from './engine/scheduler.js';
 export type { SchedulerDeps } from './engine/scheduler.js';

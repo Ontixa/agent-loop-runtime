@@ -181,6 +181,26 @@ Gates are classified against policy before execution:
 - **needs-approval** → mission pauses at `waiting_for_approval`; `agentloop approve` lets it continue (approval is sticky for the mission — it never asks twice for the same command)
 - **refused** → gate fails, command never executes (e.g. `git push --force`, wallet ops)
 
+## Mission presets
+
+Recurring maintenance work ships as named presets with strict scopes — a
+bounded path allowlist, an explicit command envelope, tight budgets, required
+validation gates and a restrictive approval posture, all resolved into the
+ordinary mission/policy model:
+
+```bash
+agentloop presets                 # list built-ins + config-defined presets
+agentloop presets dep-update      # inspect the resolved scope and posture
+agentloop run --preset dep-update # bounded dependency-update mission
+```
+
+Built-ins: `dep-update` (manifests/lockfiles only, `test` gate required,
+push=never) and `test-coverage` (test dirs + runner configs only). Custom
+presets live under `presets` in `agentloop.config.json`. Presets can only
+tighten repo policy — widening paths or commands mid-run goes through the
+normal scope-expansion approval gate. See
+[docs/mission-presets.md](docs/mission-presets.md).
+
 ## Policy
 
 Example `agentloop.policy.json` (valid JSON; mode values are `never`, `approval`,

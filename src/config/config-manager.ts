@@ -1,9 +1,10 @@
 import { existsSync, copyFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { readJsonFile, writeJsonAtomic } from '../util/atomic-file.js';
-import type { RuntimeConfig, AgentConfig } from '../types.js';
+import type { RuntimeConfig, AgentConfig, MissionPreset } from '../types.js';
 import { AgentType } from '../types.js';
 import { validateAgentConfig } from '../agents/registry.js';
+import { validatePresetShape } from '../engine/mission-presets.js';
 import { logger } from '../logger.js';
 
 /**
@@ -79,6 +80,8 @@ export class ConfigManager {
       projects: Array.isArray(raw.projects) ? raw.projects as RuntimeConfig['projects'] : undefined,
       validationCommands: raw.validationCommands && typeof raw.validationCommands === 'object'
         ? raw.validationCommands as Record<string, string[]> : undefined,
+      presets: raw.presets && typeof raw.presets === 'object' && !Array.isArray(raw.presets)
+        ? raw.presets as Record<string, MissionPreset> : undefined,
       daemon: raw.daemon && typeof raw.daemon === 'object' ? raw.daemon as RuntimeConfig['daemon'] : undefined
     };
     return cfg;
@@ -144,6 +147,11 @@ export class ConfigManager {
         if (!Array.isArray(argv) || argv.length === 0 || !argv.every(s => typeof s === 'string')) {
           errors.push(`validationCommands.${name} must be an argv array of strings`);
         }
+      }
+    }
+    for (const [name, preset] of Object.entries(this.config.presets ?? {})) {
+      for (const issue of validatePresetShape(name, preset)) {
+        errors.push(`presets.${name}: ${issue}`);
       }
     }
     const admission = this.config.daemon?.admission;
