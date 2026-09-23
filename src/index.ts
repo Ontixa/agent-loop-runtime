@@ -9,6 +9,13 @@ export { MissionStore } from './mission/mission-store.js';
 export { createMission, prepareMission, MissionPreparationError } from './engine/mission-factory.js';
 export { MissionRunner } from './engine/mission-runner.js';
 export { MissionScheduler } from './engine/scheduler.js';
+export type { SchedulerDeps } from './engine/scheduler.js';
+export {
+  evaluateAdmission, hostPressureProbe, resolveAdmissionLimits, DEFAULT_ADMISSION_LIMITS
+} from './engine/admission-control.js';
+export type {
+  AdmissionConfig, AdmissionDecision, AdmissionLimits, HostPressure, PressureProbe
+} from './engine/admission-control.js';
 export { recoverMission, detectStaleMissions } from './engine/recovery.js';
 export { Daemon } from './daemon/daemon.js';
 export { ControlApi } from './daemon/control-api.js';

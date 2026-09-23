@@ -65,6 +65,56 @@ agentloop daemon    # serves loopback API on 127.0.0.1:3210
 
 On start the daemon sweeps for interrupted missions: dead runners → `stale` → recovered to `prepared` and resumed. On SIGINT/SIGTERM it pauses active missions (they resume next start) — it does not kill work mid-flight.
 
+## Scheduler admission order and host-pressure deferral
+
+When queued missions compete for free slots the daemon's scheduler admits
+them in a deterministic order (implemented in `engine/scheduler.ts`):
+
+1. **Priority first** — lower `priority` number wins (default `100`;
+   set per mission via `POST /v1/missions` `priority`). Priority reorders
+   *queued* work only: a running mission is never preempted or killed to
+   make room — "preemption" means a later-arriving higher-priority mission
+   passes queued lower-priority ones.
+2. **Round-robin across repos** — among equal priorities, the repo whose
+   most recent admission is oldest wins (a never-served repo counts as
+   oldest). Every repo gets a turn before any repo gets a second slot in
+   the same band, so a busy repository cannot starve quieter ones.
+3. **FIFO** — equal priority and equal repo credit → earliest `queuedAt`.
+
+Capacity is enforced before ordering: `maxConcurrentMissionsPerRepo` per
+repo policy, and the effective global cap is the *minimum* of all
+registered repos' `maxConcurrentMissions` (the most restrictive registered
+policy wins, matching the pre-fairness loop's effective bound).
+
+Separately, **resource-aware admission** samples host pressure before
+starting queued missions and defers all new admissions while over
+threshold — running and queued missions are untouched, and each queued
+mission records a `mission_deferred` event (once per pressure episode)
+with the measured sample and reason. Admission re-checks automatically
+every `recheckMs` while work waits. Thresholds come from `daemon.admission`
+in the `agentloop.config.json` of the directory where `agentloop daemon`
+was started (same source as `daemon.port`/`token`):
+
+```json
+{
+  "daemon": {
+    "admission": {
+      "enabled": true,
+      "maxLoadPerCpu": 2,
+      "minFreeMemRatio": 0.05,
+      "recheckMs": 30000
+    }
+  }
+}
+```
+
+`maxLoadPerCpu` compares `os.loadavg()[0]` divided by logical CPU count —
+on Windows `loadavg` is always `0`, so that check is inert there and only
+`minFreeMemRatio` guards admission. A threshold of `0` disables that check;
+`"enabled": false` disables the gate entirely. `GET /v1/status` reports
+`scheduler.admission` (`deferred`, `reason`, `since`, `sample`) while a
+deferral episode is active.
+
 ## Control API (v1, loopback)
 
 `GET  /v1/status` — daemon health
