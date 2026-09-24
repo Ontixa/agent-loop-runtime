@@ -21,6 +21,7 @@ Each row was exercised by an automated test (`npm test` /
 | Same gate re-raised | dedupe — one pending request | ✔ | — | runtime-recovery › dedupe |
 | Approval for argv prefix used to cover longer argv | not honored (exact match required) | ✔ | — | validation-gates › prefix does not cover longer argv |
 | Approval signature invalid/missing with `AGENTLOOP_APPROVAL_KEY` | decision rejected, `approval_unverified`, mission blocked | ✔ (unit) | ledger records attempt | mission-runner stepApproval path |
+| `approvals.json` corrupt / wiped / pending gate deleted while a mission waits | `CorruptApprovalsError` on reads; waiting mission `blocked` — never resumes on a ledger that lost recorded gates; writers refuse to clobber | ✔ | corrupt bytes preserved verbatim; `approval_unverified` event | approval-ledger-integrity |
 | `--in-place` without `--approve-in-place` | `createMission` throws | ✔ | — | mission-factory invariant (tested via constructor) |
 | Windows timeout kill | direct child terminated ~ms via `TerminateProcess`; tree swept async via `taskkill` | ✔ | bounded output tail | process-supervisor › hanging agent timeout <8s |
 | Agent emits unbounded output | in-memory tail bounded, `outputTruncated`, full log to disk capped | ✔ | `logs/*.log` | process-supervisor › output bounds; fake-agent › huge |

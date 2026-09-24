@@ -30,7 +30,7 @@ export { collectHealth } from './health/health.js';
 
 export { getAdapter, validateAgentConfig, listAdapterTypes } from './agents/registry.js';
 export { loadPolicy, writeDefaultPolicy, resolvePolicy, validatePolicy, POLICY_FILE, DEFAULT_POLICY } from './policy/policy.js';
-export { decideApproval, loadApprovals } from './policy/approvals.js';
+export { decideApproval, loadApprovals, CorruptApprovalsError } from './policy/approvals.js';
 export { classifyCommand } from './policy/command-safety.js';
 
 export { inspectRepo, preflightRepo } from './git/repo-inspector.js';

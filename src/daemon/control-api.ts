@@ -6,7 +6,7 @@ import { MissionStore } from '../mission/mission-store.js';
 import { MissionScheduler } from '../engine/scheduler.js';
 import { createMission } from '../engine/mission-factory.js';
 import { recoverMission } from '../engine/recovery.js';
-import { decideApproval, loadApprovals } from '../policy/approvals.js';
+import { decideApproval, loadApprovals, CorruptApprovalsError } from '../policy/approvals.js';
 import { isTerminal } from '../mission/state-machine.js';
 import { MissionState } from '../types.js';
 import type { MissionSpec, AgentConfig, Policy } from '../types.js';
@@ -424,7 +424,12 @@ export class ControlApi {
       }
 
       if (action === 'approvals' && req.method === 'GET') {
-        return this.json(res, 200, { schemaVersion: API_SCHEMA, approvals: loadApprovals(store.dir(id)) });
+        try {
+          return this.json(res, 200, { schemaVersion: API_SCHEMA, approvals: loadApprovals(store.dir(id)) });
+        } catch (err) {
+          if (err instanceof CorruptApprovalsError) return this.json(res, 409, { error: err.message });
+          throw err;
+        }
       }
 
       if (action === 'approvals' && parts[4] && req.method === 'POST') {
@@ -432,7 +437,13 @@ export class ControlApi {
         const decision = body.decision === 'denied' ? 'denied' : 'approved';
         // decidedBy records the API caller — the signature over the decision
         // still requires the operator key when one is configured.
-        const updated = decideApproval(store.dir(id), id, parts[4], decision, body.by ?? 'control-api');
+        let updated;
+        try {
+          updated = decideApproval(store.dir(id), id, parts[4], decision, body.by ?? 'control-api');
+        } catch (err) {
+          if (err instanceof CorruptApprovalsError) return this.json(res, 409, { error: err.message });
+          throw err;
+        }
         if (!updated) return this.json(res, 409, { error: 'approval not pending or not found' });
         store.emit(id, 'approval_decided', { gate: updated.gate, status: decision, by: body.by ?? 'control-api' });
         return this.json(res, 200, { approval: updated });

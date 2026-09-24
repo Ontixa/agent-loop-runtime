@@ -279,14 +279,16 @@ terminal, or recovery validation failed).
 mission not owned by the scheduler is transitioned to `cancelled`. Terminal
 missions return their current summary.
 
-### `GET /v1/missions/:id/approvals` → 200 / 404
+### `GET /v1/missions/:id/approvals` → 200 / 404 / 409
 
 ```json
 { "schemaVersion": 1, "approvals": [ <ApprovalRequest>, … ] }
 ```
 
 Reads the per-mission approvals ledger (`approvals.json`) — the authoritative
-operator-facing record.
+operator-facing record. `409 {error}` when the ledger is corrupt or malformed
+(`CorruptApprovalsError` — the file is preserved for operator repair); an
+unreadable ledger is never reported as an empty one.
 
 `ApprovalRequest`: `{ "id": "ap_…", "gate": "<gate>", "detail": "…",
 "commands": [["git","push"]], "paths": ["src/x"], "policyHash": "…",
@@ -305,8 +307,9 @@ Body: `{ "decision": "approved" | "denied", "by": "operator-name" }` — **any
 
 Response `{ "approval": <ApprovalRequest> }` with `status`, `decidedAt`,
 `decidedBy` filled. `409 {error}` when the approval is not pending or not
-found. The decision is written to the ledger the runner polls — there is no
-separate human channel. Emits an `approval_decided` event.
+found, or when the ledger is corrupt (`CorruptApprovalsError`). The decision
+is written to the ledger the runner polls — there is no separate human
+channel. Emits an `approval_decided` event.
 
 ## Consumer guidance (ai-cli-editor)
 
