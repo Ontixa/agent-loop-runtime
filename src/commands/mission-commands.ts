@@ -163,7 +163,8 @@ export async function cmdRun(objective: string | undefined, opts: {
   console.log(`Workspace: ${mission.workspace.path}`);
 
   const runner = new MissionRunner(store, {
-    validationCommands: repoConfig(repoPath).validationCommands
+    validationCommands: repoConfig(repoPath).validationCommands,
+    signReceipts: repoConfig(repoPath).receipts?.sign === true
   });
   const result = await runner.run(mission.id);
 
@@ -195,7 +196,8 @@ export async function cmdResume(id: string, repo?: string): Promise<void> {
   const m = await recoverMission(store, id);
   console.log(`Mission ${id} recovered to state: ${m.state}`);
   const runner = new MissionRunner(store, {
-    validationCommands: repoConfig(repo ?? process.cwd()).validationCommands
+    validationCommands: repoConfig(repo ?? process.cwd()).validationCommands,
+    signReceipts: repoConfig(repo ?? process.cwd()).receipts?.sign === true
   });
   const result = await runner.run(id);
   console.log(`Mission ${id} finished: ${result.state}`);

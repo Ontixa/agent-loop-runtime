@@ -37,6 +37,14 @@ export { inspectRepo, preflightRepo } from './git/repo-inspector.js';
 export { ConfigManager, CONFIG_FILE } from './config/config-manager.js';
 export { isTerminal, canTransition } from './mission/state-machine.js';
 export { buildReceipt } from './mission/receipt.js';
+export {
+  signReceipt, verifySignedReceipt, writeSignedReceipt, readSignedReceipt,
+  signedReceiptPath, loadOrCreateReceiptKey, SIGNED_RECEIPT_FILE
+} from './mission/receipt-signing.js';
+export type {
+  SignedMissionReceipt, ReceiptSignatureBlock, ReceiptSigningKey, ReceiptVerification
+} from './mission/receipt-signing.js';
+export { canonicalJson } from './util/canonical-json.js';
 export { logger, setLogLevel } from './logger.js';
 
 // All mission/policy/agent/legacy types

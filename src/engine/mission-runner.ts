@@ -19,6 +19,7 @@ import {
   grantedScopePaths
 } from '../policy/approvals.js';
 import { writeReceipt } from '../mission/receipt.js';
+import { writeSignedReceipt } from '../mission/receipt-signing.js';
 import { boundTail } from '../util/redact.js';
 import { pidAlive } from './recovery.js';
 import { logger } from '../logger.js';
@@ -75,6 +76,8 @@ export interface RunnerOptions {
   validationCommands?: Record<string, string[]>;
   /** Optional reviewer adapter for a second-opinion review pass */
   reviewerAdapter?: AgentAdapter;
+  /** Write receipt.signed.json (Ed25519) alongside receipt.json at finalize */
+  signReceipts?: boolean;
   /** Test hook: skip the actual agent invocation */
   dryRun?: boolean;
 }
@@ -915,6 +918,12 @@ export class MissionRunner {
       const fresh = this.store.mustLoad(missionId);
       const receiptPath = writeReceipt(this.store.repoRoot, fresh);
       this.store.mutate(missionId, m => { m.outcome!.receiptPath = receiptPath; });
+      if (this.opts.signReceipts) {
+        try {
+          const signedPath = writeSignedReceipt(this.store.repoRoot, this.store.mustLoad(missionId));
+          this.store.mutate(missionId, m => { m.outcome!.signedReceiptPath = signedPath; });
+        } catch { /* signing is best-effort; unsigned receipt already recorded */ }
+      }
     } catch { /* receipt is best-effort */ }
   }
 
