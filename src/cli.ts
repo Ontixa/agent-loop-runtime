@@ -178,6 +178,7 @@ program
   .option('-r, --repo <path...>', 'Repositories to serve (default: cwd)')
   .option('--port <n>', 'Control API port')
   .option('--host <h>', 'Control API bind host (default 127.0.0.1)')
+  .option('--socket <path>', 'Unix socket / Windows named pipe instead of TCP (overrides host/port)')
   .option('--token <t>', 'Bearer token (required for non-loopback bind)')
   .action(async (opts) => {
     const cfg = new ConfigManager();
@@ -191,6 +192,7 @@ program
       config: {
         port: opts.port ? Number(opts.port) : dc.port,
         host: opts.host ?? dc.host,
+        socketPath: opts.socket ?? dc.socketPath,
         token: opts.token ?? dc.token
       },
       scheduler,

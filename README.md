@@ -296,11 +296,12 @@ Placeholders: `{objective}`, `{mission}`, `{task}`, `{worktree}`, `{repository}`
 
 ```bash
 agentloop daemon            # long-running scheduler + loopback API (127.0.0.1:3210)
+agentloop daemon --socket /run/agentloop/ctl.sock   # or a Unix socket / Windows pipe instead of TCP
 agentloop mcp               # MCP server over stdio
 agentloop health --json     # machine-readable runtime health
 ```
 
-The daemon recovers interrupted missions on start, enforces concurrency limits, and pauses (not kills) active missions on shutdown. The HTTP control API defaults to loopback and always requires a bearer token. Set `AGENTLOOP_API_TOKEN`, or use the generated credential in `.agentloop/daemon.json` after startup. Treat this file as secret; see [operator authentication and file permissions](docs/deployment-guide.md#control-api-v1-loopback).
+The daemon recovers interrupted missions on start, enforces concurrency limits, and pauses (not kills) active missions on shutdown. The HTTP control API defaults to loopback and always requires a bearer token. Set `AGENTLOOP_API_TOKEN`, or use the generated credential in `.agentloop/daemon.json` after startup. Treat this file as secret; see [operator authentication and file permissions](docs/deployment-guide.md#control-api-v1-loopback). `daemon.socketPath`/`--socket` swaps the TCP listener for a Unix domain socket (POSIX) or named pipe (`\\.\pipe\<name>` on Windows) — same routes and auth, no TCP surface.
 
 The frozen v1 HTTP contract (routes, envelopes, `?follow` NDJSON format, auth)
 for ai-cli-editor and other consumers: [docs/control-api-contract.md](docs/control-api-contract.md).

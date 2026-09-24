@@ -63,6 +63,22 @@ Daemon (continuous, multi-repo):
 agentloop daemon    # serves loopback API on 127.0.0.1:3210
 ```
 
+To take the API off the network entirely, serve it on a Unix domain socket
+(POSIX) or Windows named pipe instead of TCP — via `daemon.socketPath` in
+`agentloop.config.json` or the `--socket` flag (overrides host/port):
+
+```bash
+agentloop daemon --socket /run/agentloop/ctl.sock        # POSIX
+agentloop daemon --socket '\\.\pipe\agentloop-ctl'       # Windows named pipe
+```
+
+`daemon.json` then records `transport` (`"unix"`/`"pipe"`) + `socketPath`
+instead of `url`. Bearer auth is unchanged — every route still needs the
+token; the socket removes the TCP surface (port scans, DNS rebinding), it is
+not a permission boundary. POSIX socket files are mode `0600`; a stale
+socket file is reclaimed on restart, but a live peer on the endpoint refuses
+the bind rather than sharing it.
+
 On start the daemon sweeps for interrupted missions: dead runners → `stale` → recovered to `prepared` and resumed. On SIGINT/SIGTERM it pauses active missions (they resume next start) — it does not kill work mid-flight.
 
 ## Scheduler admission order and host-pressure deferral
@@ -139,6 +155,9 @@ created with POSIX mode `0600`; on Windows, restrict the directory's inherited A
 to the operator account. This is not isolation from processes running as that user.
 With port `0`, the operating system assigns an available port; read the running
 daemon's actual URL from the status file. IPv6 literal URLs use brackets.
+When `daemon.socketPath`/`--socket` selects the socket transport, clients
+connect over the Unix socket or named pipe with `Host: localhost` — the same
+routes, envelopes and auth apply (see docs/control-api-contract.md).
 
 ## Operational runbook
 

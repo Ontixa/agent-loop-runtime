@@ -66,7 +66,7 @@ repo/
 ## Control surfaces
 
 - **CLI** (`src/cli.ts` + `src/commands/`): operator interface.
-- **HTTP API** (`daemon/control-api.ts`): loopback JSON API v1 for AI CLI Editor and automation; token via `AGENTLOOP_API_TOKEN` when bound beyond loopback.
+- **HTTP API** (`daemon/control-api.ts`): loopback JSON API v1 for AI CLI Editor and automation; token via `AGENTLOOP_API_TOKEN` when bound beyond loopback; optional Unix-socket/Windows-pipe transport via `daemon.socketPath` (`daemon/socket-transport.ts`).
 - **MCP** (`mcp/mcp-server.ts`): newline-delimited JSON-RPC tools over stdio. No approve-as-human tool by design.
 
 ## Trust boundaries

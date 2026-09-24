@@ -5,8 +5,8 @@ This document is the versioned contract for the loopback control API served by
 surface consumed by ai-cli-editor and operator tooling. Every statement here is
 verified against code and pinned by `src/__tests__/control-api-contract.test.ts`
 plus `control-api-auth.test.ts` / `control-api-events-follow.test.ts` /
-`control-api-address.test.ts` — a shape or status change must update this doc
-and the contract tests in the same commit.
+`control-api-address.test.ts` / `control-api-socket.test.ts` — a shape or
+status change must update this doc and the contract tests in the same commit.
 
 ## Versioning policy
 
@@ -27,6 +27,19 @@ and the contract tests in the same commit.
   OS-assigned (read the real URL from `.agentloop/daemon.json`).
 - Binding to a non-loopback address without a configured token refuses to
   start.
+- **Socket transport (opt-in):** `daemon.socketPath` config or
+  `agentloop daemon --socket <path>` replaces the TCP listener with a Unix
+  domain socket (POSIX — absolute path, ≤103 chars) or a Windows named pipe
+  (`\\.\pipe\<name>`). `daemon.json` then publishes `transport`
+  (`"unix"`/`"pipe"`) + `socketPath` and **no `url` field** — consumers that
+  only speak TCP must treat the daemon as unreachable over HTTP and fall
+  back. POSIX socket files are created mode `0600` and unlinked on stop; a
+  stale socket file is reclaimed on start, while a live peer on the endpoint
+  refuses the bind (`socket already in use`). Clients connect with
+  `socketPath` + any `http://localhost` URL and send `Host: localhost`
+  (Node's default; an optional port suffix is accepted). Every other
+  contract rule below is unchanged — the socket narrows network exposure, it
+  is not an authentication mechanism.
 - **Every data route requires** `Authorization: Bearer <token>` — including
   loopback. Token sources, in order: `daemon.token` config →
   `AGENTLOOP_API_TOKEN` env → generated ephemeral `alr_<48 hex>` persisted in
@@ -34,7 +47,8 @@ and the contract tests in the same commit.
 - The comparison is constant-time; malformed schemes (`Basic`, `bearer`,
   wrong length) all get 401.
 - **Host header must match the bound host:port** (anti-DNS-rebinding) → else
-  403, checked before auth.
+  403, checked before auth. On a socket transport the accepted authority is
+  `localhost[:port]` — the same gate, with nothing to rebind.
 - The ONLY unauthenticated response is `OPTIONS *` → `204` with empty body
   (CORS preflight). CORS headers (`Access-Control-Allow-Origin`, `Vary`,
   allowed methods `GET,POST,OPTIONS`, allowed headers
@@ -298,7 +312,9 @@ separate human channel. Emits an `approval_decided` event.
 
 1. Read `url` + `token` from `<repo>/.agentloop/daemon.json` (or
    `AGENTLOOP_HOME/daemon.json`); treat the token as a secret — never pass it
-   to an agent.
+   to an agent. When `transport` is `"unix"`/`"pipe"` there is no `url` —
+   connect to `socketPath` with `Host: localhost`, or treat the daemon as
+   unreachable over TCP and fall back.
 2. Poll `GET /v1/missions/:id/events?after=<seq>` or hold a `?follow` stream;
    on stream end (`limit`/`gone`/`error`) reconnect with the last seen `seq`.
 3. Ignore unknown fields and unknown event types — additive changes are legal
