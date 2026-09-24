@@ -32,7 +32,10 @@ claim to prevent. Nothing below is aspirational — each line maps to code or a 
 - **Corruption is loud, never blank.** An unparseable `mission.json` throws
   `CorruptStateError` on every read path, is preserved byte-for-byte, is
   reported by `listCorrupt()`/`missions`/health, and is never overwritten by
-  `save`/`mutate`/`transition`.
+  `save`/`mutate`/`transition`. The approvals ledger follows the same
+  contract: a corrupt or malformed `approvals.json` throws
+  `CorruptApprovalsError` and is never read as "no approvals" or silently
+  rewritten — a wiped ledger is not a decision.
 - **Interruption is honest.** Invocation intent and agent pid are persisted
   *before* spawn. A runner lost mid-task leaves `task.interrupted: true` +
   open pass marked `interrupted` — outcomes are recorded as *unknown*, never
@@ -43,7 +46,10 @@ claim to prevent. Nothing below is aspirational — each line maps to code or a 
   Approving `["node","-e"]` does not cover `["node","-e","rm()"]`.
   With `AGENTLOOP_APPROVAL_KEY` set, unsigned or bad-signature decisions are
   rejected (`approval_unverified` → blocked) — both at the waiting step and
-  again when the decision is consumed.
+  again when the decision is consumed. The waiting step also fails closed on
+  ledger integrity: a corrupt file, an empty ledger, or a ledger that lost a
+  gate the mission recorded blocks the mission — resuming requires a real
+  decision entry, never an absent file.
 - **Scope expansion is explicit and exact.** The mission envelope —
   `spec.scope` paths and `policy.allowedCommands` — is fixed at creation.
   Planner output may *declare* paths/commands beyond it, and the diff may

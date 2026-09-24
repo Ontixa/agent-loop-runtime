@@ -4,7 +4,9 @@ import { randomBytes } from 'crypto';
 import { MissionStore, RunnerConflictError } from '../mission/mission-store.js';
 import { isTerminal, canTransition } from '../mission/state-machine.js';
 import { MissionState, TaskStatus } from '../types.js';
-import type { Mission, AgentAdapter, TaskNode, MissionPass, AgentInvocationResult } from '../types.js';
+import type {
+  Mission, AgentAdapter, TaskNode, MissionPass, AgentInvocationResult, ApprovalRequest
+} from '../types.js';
 import { supervise } from '../supervisor/process-supervisor.js';
 import { toSpawnInvocation } from '../agents/cli-adapter-base.js';
 import { getAdapter } from '../agents/registry.js';
@@ -16,7 +18,7 @@ import { diffSummary } from '../git/repo-inspector.js';
 import { GitOutputLimitError } from '../git/git-runner.js';
 import {
   requestApproval, loadApprovals, policyHash as computePolicyHash, verifyDecision,
-  grantedScopePaths
+  grantedScopePaths, CorruptApprovalsError
 } from '../policy/approvals.js';
 import { writeReceipt } from '../mission/receipt.js';
 import { writeSignedReceipt } from '../mission/receipt-signing.js';
@@ -686,7 +688,41 @@ export class MissionRunner {
   private async stepApproval(mission: Mission): Promise<void> {
     // The ledger on disk is authoritative — the operator may decide from a
     // different process (CLI/control API) while this runner waits.
-    const disk = loadApprovals(this.store.dir(mission.id));
+    let disk: ApprovalRequest[];
+    try {
+      disk = loadApprovals(this.store.dir(mission.id));
+    } catch (err) {
+      if (err instanceof CorruptApprovalsError) {
+        // Unreadable evidence is not a decision. Resume must NEVER happen on a
+        // ledger we cannot parse — that path fabricated "approval granted".
+        this.store.emit(mission.id, 'approval_unverified', {
+          reason: 'ledger_corrupt', error: err.message.slice(0, 200)
+        });
+        this.store.transition(mission, MissionState.BLOCKED,
+          'approvals ledger is corrupt — file preserved; repair it and resume to re-drive');
+        return;
+      }
+      throw err;
+    }
+
+    // A mission reaches this state only after a gate was recorded — the
+    // ledger must still contain every gate the mission record knows. An
+    // empty ledger or a vanished recorded id is tampering/loss, never a
+    // decision: resuming here would fabricate an approval that never happened.
+    const recorded = mission.approvals ?? [];
+    const missing = recorded.filter(r => !disk.some(d => d.id === r.id));
+    if (disk.length === 0 || missing.length > 0) {
+      this.store.emit(mission.id, 'approval_unverified', {
+        reason: disk.length === 0 ? 'ledger_empty' : 'ledger_entries_missing',
+        ...(missing.length > 0 ? { missingIds: missing.map(m => m.id) } : {})
+      });
+      this.store.transition(mission, MissionState.BLOCKED,
+        disk.length === 0
+          ? 'approval ledger is empty while a gate is awaited — no decision exists to honor'
+          : `approval ledger lost recorded gate(s) ${missing.map(m => m.id).join(', ')} — cannot verify a human decision`);
+      return;
+    }
+
     const pending = disk.filter(a => a.status === 'pending');
 
     if (pending.length === 0) {

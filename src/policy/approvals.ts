@@ -1,5 +1,5 @@
 import { join } from 'path';
-import { readJsonFile, writeJsonAtomic } from '../util/atomic-file.js';
+import { readJsonFileChecked, writeJsonAtomic } from '../util/atomic-file.js';
 import { createHash, createHmac } from 'crypto';
 import type { ApprovalRequest, Policy } from '../types.js';
 import { pathInScope } from './command-safety.js';
@@ -29,13 +29,57 @@ export interface ApprovalsFile {
   approvals: ApprovalRequest[];
 }
 
+/**
+ * The approvals ledger failed to parse or violates its file shape. Mirrors
+ * CorruptStateError for mission.json: the bytes are preserved in place, the
+ * error names the file, and no caller may treat the ledger as empty — a
+ * corrupt ledger is NOT "no approvals", it is unverifiable evidence.
+ */
+export class CorruptApprovalsError extends Error {
+  constructor(public readonly path: string, detail: string) {
+    super(`Approvals ledger is corrupt (file preserved for diagnosis): ${path} — ${detail}`);
+    this.name = 'CorruptApprovalsError';
+    Object.setPrototypeOf(this, CorruptApprovalsError.prototype);
+  }
+}
+
 export function approvalsPath(missionDir: string): string {
   return join(missionDir, 'approvals.json');
 }
 
+const APPROVAL_STATUSES = new Set<ApprovalRequest['status']>(['pending', 'approved', 'denied']);
+
+/**
+ * Load the approval ledger. A mission only writes this file when a gate is
+ * raised, so ABSENT legitimately means "no gates yet" → []. Anything present
+ * but unparseable or malformed is tampering or a torn write: it throws
+ * CorruptApprovalsError and is never silently emptied — silently reading it
+ * as [] let a wiped ledger masquerade as "every gate decided".
+ */
 export function loadApprovals(missionDir: string): ApprovalRequest[] {
-  const f = readJsonFile<ApprovalsFile>(approvalsPath(missionDir));
-  return f?.approvals ?? [];
+  const path = approvalsPath(missionDir);
+  const res = readJsonFileChecked<unknown>(path);
+  if (res.status === 'missing') return [];
+  if (res.status === 'corrupt') {
+    throw new CorruptApprovalsError(path, res.error ?? 'unparseable JSON');
+  }
+  const f = res.value as Record<string, unknown>;
+  if (!f || typeof f !== 'object' || Array.isArray(f)) {
+    throw new CorruptApprovalsError(path, 'root is not a JSON object');
+  }
+  if (f.approvals === undefined) return [];
+  if (!Array.isArray(f.approvals)) {
+    throw new CorruptApprovalsError(path, '"approvals" is not an array');
+  }
+  for (const a of f.approvals) {
+    const entry = a as Partial<ApprovalRequest> | null;
+    if (!entry || typeof entry !== 'object' ||
+        typeof entry.id !== 'string' || entry.id.length === 0 ||
+        !APPROVAL_STATUSES.has(entry.status as ApprovalRequest['status'])) {
+      throw new CorruptApprovalsError(path, 'entry is not a well-formed approval (needs id + status)');
+    }
+  }
+  return f.approvals as ApprovalRequest[];
 }
 
 export function saveApprovals(missionDir: string, missionId: string, approvals: ApprovalRequest[]): void {

@@ -6,7 +6,7 @@ import { MissionRunner } from '../engine/mission-runner.js';
 import { recoverMission } from '../engine/recovery.js';
 import { defaultPlan, maintenancePlan } from '../engine/planner.js';
 import { resolvePresetMission, PresetError } from '../engine/mission-presets.js';
-import { decideApproval, loadApprovals } from '../policy/approvals.js';
+import { decideApproval, loadApprovals, CorruptApprovalsError } from '../policy/approvals.js';
 import { loadPolicy } from '../policy/policy.js';
 import { ConfigManager } from '../config/config-manager.js';
 import { isTerminal } from '../mission/state-machine.js';
@@ -193,7 +193,18 @@ export function cmdPause(id: string, repo?: string): void {
 
 export async function cmdResume(id: string, repo?: string): Promise<void> {
   const store = new MissionStore(repo ?? process.cwd());
-  const m = await recoverMission(store, id);
+  let m;
+  try {
+    m = await recoverMission(store, id);
+  } catch (err) {
+    if (err instanceof CorruptApprovalsError) {
+      console.error(chalk.red(err.message));
+      console.error('Repair or remove the file, then resume again.');
+      process.exitCode = 2;
+      return;
+    }
+    throw err;
+  }
   console.log(`Mission ${id} recovered to state: ${m.state}`);
   const runner = new MissionRunner(store, {
     validationCommands: repoConfig(repo ?? process.cwd()).validationCommands,
@@ -215,16 +226,27 @@ export function cmdApprove(id: string, approvalId: string, opts: { deny?: boolea
   const store = new MissionStore(opts.repo ?? process.cwd());
   const mission = store.mustLoad(id);
   const decision = opts.deny ? 'denied' : 'approved';
-  const updated = decideApproval(store.dir(id), id, approvalId, decision, opts.by ?? 'cli');
-  if (!updated) {
-    const pending = loadApprovals(store.dir(id)).filter(a => a.status === 'pending');
-    console.error(chalk.red(`Approval ${approvalId} not found or already decided.`));
-    if (pending.length > 0) {
-      console.error('Pending approvals:');
-      for (const a of pending) console.error(`  ${a.id}  ${a.gate}  ${a.detail}`);
+  let updated;
+  try {
+    updated = decideApproval(store.dir(id), id, approvalId, decision, opts.by ?? 'cli');
+    if (!updated) {
+      const pending = loadApprovals(store.dir(id)).filter(a => a.status === 'pending');
+      console.error(chalk.red(`Approval ${approvalId} not found or already decided.`));
+      if (pending.length > 0) {
+        console.error('Pending approvals:');
+        for (const a of pending) console.error(`  ${a.id}  ${a.gate}  ${a.detail}`);
+      }
+      process.exitCode = 1;
+      return;
     }
-    process.exitCode = 1;
-    return;
+  } catch (err) {
+    if (err instanceof CorruptApprovalsError) {
+      console.error(chalk.red(err.message));
+      console.error('Repair or remove the file before deciding gates.');
+      process.exitCode = 2;
+      return;
+    }
+    throw err;
   }
   store.emit(id, 'approval_decided', { gate: updated.gate, status: decision, by: opts.by ?? 'cli' });
   console.log(`${decision === 'approved' ? chalk.green('Approved') : chalk.red('Denied')} ${updated.gate} on mission ${mission.id}`);
