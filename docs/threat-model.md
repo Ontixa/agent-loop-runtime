@@ -14,7 +14,7 @@ claim to prevent. Nothing below is aspirational — each line maps to code or a 
 
 | Boundary | What crosses it | Enforcement |
 |---|---|---|
-| Operator → runtime | CLI/API/MCP commands, approval decisions | daemon API: bearer token (auto-generated per-daemon when not configured), `Host` allowlist, CORS off by default (`daemon.corsOrigins` opt-in), loopback-only default bind |
+| Operator → runtime | CLI/API/MCP commands, approval decisions | daemon API: bearer token (auto-generated per-daemon when not configured), `Host` allowlist, CORS off by default (`daemon.corsOrigins` opt-in), loopback-only default bind; optional Unix-socket/named-pipe transport (`daemon.socketPath`, POSIX file mode 0600) — narrows network exposure, NOT a substitute for the token |
 | Runtime → agent CLI | argv + scrubbed env + cwd=worktree | native/Node argv with `shell:false`; restricted literal batch transport on Windows; `AGENTLOOP_*` env stripped; bounded output, timeout, cancellation |
 | Agent → workspace | file edits inside the worktree | git worktree isolation; `protectedPaths` (`.agentloop/**`, policy/config files, `.git/**`) audited at validation time |
 | Agent → repo (git) | commits on the mission branch | `allowLocalCommit` default true; `allowPush`/`allowPullRequest` = `approval`; `allowMerge` = `never` |

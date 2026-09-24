@@ -1,5 +1,6 @@
 import { createServer, Server, IncomingMessage, ServerResponse } from 'http';
 import { randomBytes, timingSafeEqual } from 'crypto';
+import { chmodSync } from 'fs';
 import { join } from 'path';
 import { MissionStore } from '../mission/mission-store.js';
 import { MissionScheduler } from '../engine/scheduler.js';
@@ -11,15 +12,19 @@ import { MissionState } from '../types.js';
 import type { MissionSpec, AgentConfig, Policy } from '../types.js';
 import { MissionEventFollower, resolveFollowLimits } from './event-follow.js';
 import type { FollowLimits } from './event-follow.js';
+import { claimSocketPath, releaseSocketPath, socketPathError } from './socket-transport.js';
 import { logger } from '../logger.js';
 
 /**
  * Local control API — the machine-readable surface for ai-cli-editor and the
  * agentloop CLI.
  *
- * Versioned under /v1. Binds loopback by default; binding elsewhere requires
- * a bearer token. Approvals decided here are written to the same approvals
- * ledger the runner polls — there is no separate "approve as human" path.
+ * Versioned under /v1. Binds TCP loopback by default; binding elsewhere
+ * requires a bearer token. `daemon.socketPath` swaps the TCP listener for a
+ * Unix domain socket (POSIX) or Windows named pipe — the bearer token stays
+ * mandatory on every route. Approvals decided here are written to the same
+ * approvals ledger the runner polls — there is no separate "approve as
+ * human" path.
  *
  * Security posture (honest — see docs/threat-model.md):
  * - EVERY request requires a bearer token. If the operator doesn't configure
@@ -37,6 +42,12 @@ import { logger } from '../logger.js';
 export interface ControlApiOptions {
   host?: string;
   port?: number;
+  /**
+   * Unix domain socket (POSIX) or Windows named pipe (`\\.\pipe\<name>`) to
+   * listen on INSTEAD of TCP host:port. Bearer auth is unchanged — the socket
+   * narrows network exposure, it does not authenticate callers.
+   */
+  socketPath?: string;
   token?: string;
   /** Allowed CORS origins (exact match on Origin header). Default: none. */
   corsOrigins?: string[];
@@ -63,6 +74,8 @@ export class ControlApi {
   private token = '';
   /** Open ?follow streams — bounded by maxFollowers, closed on stop(). */
   private followers = new Set<MissionEventFollower>();
+  /** Socket endpoint this instance bound, released on stop() (POSIX unlink). */
+  private boundSocket: string | null = null;
 
   constructor(private readonly opts: ControlApiOptions) {}
 
@@ -76,7 +89,22 @@ export class ControlApi {
     return host.includes(':') ? `[${host}]` : host;
   }
 
+  /** 'tcp' normally; the socket transports when daemon.socketPath is set. */
+  get transport(): 'tcp' | 'unix' | 'pipe' {
+    if (!this.opts.socketPath) return 'tcp';
+    return process.platform === 'win32' ? 'pipe' : 'unix';
+  }
+
+  /** The configured socket endpoint, when the API is socket-bound. */
+  get socketPath(): string | undefined { return this.opts.socketPath; }
+
+  /**
+   * Request base for clients. On TCP this is the listenable URL; on a socket
+   * transport it is the conventional `http://localhost` authority that a
+   * client pairs with `socketPath` (there is no TCP port to publish).
+   */
   get url(): string {
+    if (this.transport !== 'tcp') return 'http://localhost';
     return `http://${this.authorityHost}:${this.port}`;
   }
 
@@ -86,13 +114,18 @@ export class ControlApi {
   async start(): Promise<void> {
     const host = this.opts.host ?? '127.0.0.1';
     const port = this.opts.port ?? 3210;
-    const nonLoopback = host !== '127.0.0.1' && host !== 'localhost' && host !== '::1';
+    const socketPath = this.opts.socketPath;
+    const nonLoopback = !socketPath && host !== '127.0.0.1' && host !== 'localhost' && host !== '::1';
     this.token = this.opts.token || `alr_${randomBytes(24).toString('hex')}`;
     if (nonLoopback && !this.opts.token) {
       throw new Error('Refusing to bind control API beyond loopback without a token (daemon.token or --token)');
     }
     if (!this.opts.token) {
       logger.info('Control API using generated ephemeral token (stored in daemon.json)');
+    }
+    if (socketPath) {
+      const err = socketPathError(socketPath);
+      if (err) throw new Error(err);
     }
 
     this.server = createServer((req, res) => void this.handle(req, res).catch(err => {
@@ -102,6 +135,31 @@ export class ControlApi {
       if (res.headersSent) { try { res.end(); } catch { /* gone */ } return; }
       this.json(res, 500, { error: 'internal error' });
     }));
+
+    if (socketPath) {
+      await claimSocketPath(socketPath);
+      try {
+        await new Promise<void>((resolve, reject) => {
+          this.server!.listen(socketPath, () => resolve()).on('error', reject);
+        });
+      } catch (error) {
+        releaseSocketPath(socketPath);
+        throw error;
+      }
+      this.boundSocket = socketPath;
+      // Least authority on POSIX: the endpoint file is owner-only. On Windows
+      // named pipes the default ACL applies — the bearer stays the boundary.
+      if (process.platform !== 'win32') {
+        try { chmodSync(socketPath, 0o600); }
+        catch (error) {
+          logger.warn('could not restrict control socket permissions', {
+            socketPath, error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+      logger.info(`Control API listening on ${this.transport} socket ${socketPath} (bearer auth)`);
+      return;
+    }
 
     await new Promise<void>((resolve, reject) => {
       this.server!.listen(port, host, () => resolve()).on('error', reject);
@@ -121,6 +179,10 @@ export class ControlApi {
       this.server!.closeIdleConnections();
     });
     this.server = null;
+    if (this.boundSocket) {
+      releaseSocketPath(this.boundSocket);
+      this.boundSocket = null;
+    }
   }
 
   // ── helpers ────────────────────────────────────────────────────────────
@@ -159,9 +221,13 @@ export class ControlApi {
    * Host-header check: the request must target the bound host:port. Rejects
    * DNS-rebinding attempts where a browser page at evil.com resolves to
    * 127.0.0.1 — the Host header would be 'evil.com', not ours.
+   * On a socket transport there is no DNS or TCP to rebind, but the same
+   * gate is kept: clients connecting via socketPath send `Host: localhost`
+   * (Node's default), optionally with a port.
    */
   private hostOk(req: IncomingMessage): boolean {
     const host = req.headers.host ?? '';
+    if (this.opts.socketPath) return /^localhost(:\d+)?$/.test(host);
     const bound = this.opts.host ?? '127.0.0.1';
     const port = this.port;
     const ok = [`${this.authorityHost}:${port}`, bound, `localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`];

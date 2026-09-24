@@ -686,6 +686,12 @@ export interface RuntimeConfig {
   daemon?: {
     host?: string;
     port?: number;
+    /**
+     * Listen on a Unix domain socket (POSIX: absolute path) or a Windows
+     * named pipe (`\\.\pipe\<name>`) INSTEAD of TCP host:port. Bearer auth
+     * still applies to every route. See docs/control-api-contract.md.
+     */
+    socketPath?: string;
     token?: string;
     /** Explicit CORS origins allowed to call the API from a browser. Default: none. */
     corsOrigins?: string[];

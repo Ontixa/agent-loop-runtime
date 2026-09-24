@@ -39,6 +39,7 @@ export class Daemon {
     this.api = new ControlApi({
       host: cfg.host ?? '127.0.0.1',
       port: cfg.port ?? 3210,
+      socketPath: cfg.socketPath,
       token: cfg.token ?? process.env.AGENTLOOP_API_TOKEN,
       corsOrigins: cfg.corsOrigins,
       follow: cfg.eventFollow,
@@ -75,10 +76,17 @@ export class Daemon {
       mkdirSync(dir, { recursive: true });
       // Restrict the temporary file from creation, before writing the bearer.
       // Windows operators must also restrict the directory's inherited ACL.
+      // For a socket transport there is no TCP URL to publish — tooling reads
+      // `socketPath` + `transport` instead. Consumers that only understand
+      // `url` (e.g. the MCP resume shortcut) treat its absence as "no HTTP
+      // endpoint" and fall back to local behavior honestly.
       writeJsonAtomic(join(dir, 'daemon.json'), {
         pid: process.pid,
         startedAt: new Date(this.startedAt).toISOString(),
-        url: this.api.url,
+        transport: this.api.transport,
+        ...(this.api.transport === 'tcp'
+          ? { url: this.api.url }
+          : { socketPath: this.api.socketPath }),
         token: this.api.bearerToken,
         repos: this.opts.repos
       }, 0o600);

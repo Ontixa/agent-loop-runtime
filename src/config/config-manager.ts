@@ -5,6 +5,7 @@ import type { RuntimeConfig, AgentConfig, MissionPreset } from '../types.js';
 import { AgentType } from '../types.js';
 import { validateAgentConfig } from '../agents/registry.js';
 import { validatePresetShape } from '../engine/mission-presets.js';
+import { socketPathError } from '../daemon/socket-transport.js';
 import { logger } from '../logger.js';
 
 /**
@@ -158,6 +159,10 @@ export class ConfigManager {
     }
     if (this.config.receipts?.sign !== undefined && typeof this.config.receipts.sign !== 'boolean') {
       errors.push('receipts.sign must be a boolean');
+    }
+    if (this.config.daemon?.socketPath !== undefined) {
+      const socketError = socketPathError(this.config.daemon.socketPath);
+      if (socketError) errors.push(socketError);
     }
     const admission = this.config.daemon?.admission;
     if (admission) {
