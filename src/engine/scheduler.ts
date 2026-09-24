@@ -63,7 +63,7 @@ export class MissionScheduler extends EventEmitter {
   private running = new Map<string, RunningEntry>();
   private stores = new Map<string, MissionStore>();
   private policies = new Map<string, Policy>();
-  private repoConfigs = new Map<string, Record<string, string[]>>();
+  private repoConfigs = new Map<string, { validationCommands: Record<string, string[]>; signReceipts: boolean }>();
   private stopped = false;
   private pumpTimer: NodeJS.Timeout | null = null;
   /**
@@ -97,7 +97,11 @@ export class MissionScheduler extends EventEmitter {
     try {
       const cfg = new ConfigManager(join(repoRoot, 'agentloop.config.json'));
       if (cfg.loadedFromFile) {
-        this.repoConfigs.set(repoRoot, cfg.getConfig().validationCommands ?? {});
+        const c = cfg.getConfig();
+        this.repoConfigs.set(repoRoot, {
+          validationCommands: c.validationCommands ?? {},
+          signReceipts: c.receipts?.sign === true
+        });
       }
     } catch { /* malformed config → no named gates for this repo */ }
   }
@@ -377,9 +381,11 @@ export class MissionScheduler extends EventEmitter {
       }
     }
 
+    const repoCfg = this.repoConfigs.get(store.repoRoot);
     const runner = new MissionRunner(store, {
       ...this.runnerOpts,
-      validationCommands: this.runnerOpts.validationCommands ?? this.repoConfigs.get(store.repoRoot)
+      validationCommands: this.runnerOpts.validationCommands ?? repoCfg?.validationCommands,
+      signReceipts: this.runnerOpts.signReceipts ?? repoCfg?.signReceipts ?? false
     });
     const promise = runner.run(missionId);
     this.running.set(missionId, { missionId, repoRoot: store.repoRoot, runner, promise });

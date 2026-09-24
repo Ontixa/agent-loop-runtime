@@ -143,9 +143,9 @@ created → prepared → running → validating → completed
           waiting_for_approval   failed / blocked / cancelled
 ```
 
-Every mission carries: objective, acceptance criteria, non-goals, repository + base SHA, agent config, policy snapshot, workspace (worktree), budgets, task DAG, pass history, approvals, checkpoints, usage, and a final outcome with an execution receipt.
+Every mission carries: objective, acceptance criteria, non-goals, repository + base SHA, agent config, policy snapshot, workspace (worktree), budgets, task DAG, pass history, approvals, checkpoints, usage, and a final outcome with an execution receipt. Optionally that receipt is also Ed25519-signed into `receipt.signed.json` — see [signed receipts](docs/signed-receipts.md).
 
-State is persisted under `.agentloop/missions/<id>/` (`mission.json` CAS + `mission.json.lock`, `events.jsonl` seq/id, `approvals.json`, `receipt.json`, bounded agent logs). Only a live lease-holder (pid + nonce + heartbeat) may write. Crash the runtime — `agentloop resume` audits what was interrupted (tasks, passes, orphaned agent pids, lost-work suspicion) and re-enters through `prepared`; interrupted work is retried with a partial-work warning, never marked done. A corrupt `mission.json` is reported as corrupt, never treated as missing.
+State is persisted under `.agentloop/missions/<id>/` (`mission.json` CAS + `mission.json.lock`, `events.jsonl` seq/id, `approvals.json`, `receipt.json`, `receipt.signed.json` when enabled, bounded agent logs). Only a live lease-holder (pid + nonce + heartbeat) may write. Crash the runtime — `agentloop resume` audits what was interrupted (tasks, passes, orphaned agent pids, lost-work suspicion) and re-enters through `prepared`; interrupted work is retried with a partial-work warning, never marked done. A corrupt `mission.json` is reported as corrupt, never treated as missing.
 
 ## Safety model
 

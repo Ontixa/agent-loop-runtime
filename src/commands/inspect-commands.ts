@@ -192,6 +192,7 @@ export function cmdReport(id: string, opts: { json?: boolean; repo?: string }): 
     console.log(chalk.bold('\n  outcome:'));
     console.log(`    ${m.outcome.result} — ${m.outcome.summary}`);
     if (m.outcome.receiptPath) console.log(`    receipt: ${m.outcome.receiptPath}`);
+    if (m.outcome.signedReceiptPath) console.log(`    signed:  ${m.outcome.signedReceiptPath}`);
   }
 }
 

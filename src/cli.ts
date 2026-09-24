@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import { cmdInit, cmdDoctor, cmdMigrate } from './commands/setup-commands.js';
 import { cmdRun, cmdPause, cmdResume, cmdCancel, cmdApprove } from './commands/mission-commands.js';
 import { cmdMissions, cmdStatus, cmdLogs, cmdReport } from './commands/inspect-commands.js';
+import { cmdReceipt } from './commands/receipt-commands.js';
 import { cmdPresets } from './commands/preset-commands.js';
 import { cmdClean } from './commands/clean-command.js';
 import { collectHealth } from './health/health.js';
@@ -96,6 +97,14 @@ program
   .option('--json', 'Machine-readable (full receipt object)')
   .option('-r, --repo <path>', 'Repository path')
   .action((id, opts) => cmdReport(id, { json: opts.json, repo: opts.repo }));
+
+program
+  .command('receipt <missionId>')
+  .description('Verify the signed execution receipt (or create one with --sign)')
+  .option('--sign', 'Sign the mission receipt now (creates a repo key on first use)')
+  .option('--json', 'Machine-readable output')
+  .option('-r, --repo <path>', 'Repository path')
+  .action((id, opts) => cmdReceipt(id, { json: opts.json, sign: opts.sign, repo: opts.repo }));
 
 program
   .command('pause <missionId>')

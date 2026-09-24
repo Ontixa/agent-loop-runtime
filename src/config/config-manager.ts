@@ -82,6 +82,8 @@ export class ConfigManager {
         ? raw.validationCommands as Record<string, string[]> : undefined,
       presets: raw.presets && typeof raw.presets === 'object' && !Array.isArray(raw.presets)
         ? raw.presets as Record<string, MissionPreset> : undefined,
+      receipts: raw.receipts && typeof raw.receipts === 'object' && !Array.isArray(raw.receipts)
+        ? raw.receipts as RuntimeConfig['receipts'] : undefined,
       daemon: raw.daemon && typeof raw.daemon === 'object' ? raw.daemon as RuntimeConfig['daemon'] : undefined
     };
     return cfg;
@@ -153,6 +155,9 @@ export class ConfigManager {
       for (const issue of validatePresetShape(name, preset)) {
         errors.push(`presets.${name}: ${issue}`);
       }
+    }
+    if (this.config.receipts?.sign !== undefined && typeof this.config.receipts.sign !== 'boolean') {
+      errors.push('receipts.sign must be a boolean');
     }
     const admission = this.config.daemon?.admission;
     if (admission) {

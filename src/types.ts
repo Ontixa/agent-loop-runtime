@@ -391,6 +391,8 @@ export interface MissionOutcome {
   summary: string;
   finalSha?: string;
   receiptPath?: string;
+  /** Ed25519-signed receipt envelope, when receipts.sign is enabled */
+  signedReceiptPath?: string;
   at: string;
 }
 
@@ -671,6 +673,15 @@ export interface RuntimeConfig {
    * built-in. See docs/mission-presets.md.
    */
   presets?: Record<string, MissionPreset>;
+  /**
+   * Execution-receipt options. `sign: true` makes every terminal mission
+   * also write `receipt.signed.json` — an Ed25519 signature over the
+   * canonical receipt, verifiable with `agentloop receipt <id>`.
+   * Default off. See docs/signed-receipts.md.
+   */
+  receipts?: {
+    sign?: boolean;
+  };
   /** Optional daemon overrides */
   daemon?: {
     host?: string;
