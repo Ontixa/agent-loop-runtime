@@ -266,11 +266,12 @@ export class MissionEventFollower {
 
   private flushOutbox(): void {
     while (this.outbox.length > 0 && !this.res.writableEnded && !this.res.destroyed) {
-      if (!this.res.write(this.outbox[0] + '\n')) {
+      // write(false) accepts the chunk; it only signals backpressure.
+      const line = this.outbox.shift()!;
+      if (!this.res.write(line + '\n')) {
         this.backpressured = true;
         return; // remainder stays queued; 'drain' resumes
       }
-      this.outbox.shift();
     }
   }
 }
