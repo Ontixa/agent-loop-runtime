@@ -251,13 +251,15 @@ Line contract — one JSON object per `\n`-terminated line:
 - `{"meta":"heartbeat","at":…}` keepalives arrive on an idle stream.
 - The final line is `{"meta":"end",…}`; `reason` is one of `terminal`
   (mission reached a terminal state — `state` present after a short drain
-  window), `limit` (per-connection `maxDurationMs` cap hit — no `state`),
+  window and the persisted backlog has drained), `limit` (per-connection `maxDurationMs` cap hit — no `state`),
   `shutdown` (daemon stop or client disconnect — the end line may not arrive
   on disconnect), `gone` (mission record unreadable — no `state`), `error`
   (internal failure — no `state`).
 - Bounds (config `daemon.eventFollow`): `pollMs` 500, `heartbeatMs` 15000,
   `maxDurationMs` 30 min, `maxConnections` 32 (429 beyond), per-poll read cap
   512 KiB, max line 256 KiB (oversized lines counted into `skippedLines`).
+  Terminal replay continues in bounded polls beyond the drain window when
+  backlog remains, respecting backpressure. The hard lifetime cap still applies.
   The stream ALWAYS ends — consumers must still handle reconnect via `after`.
 
 ### `POST /v1/missions/:id/pause` → 200

@@ -109,6 +109,7 @@ export class MissionEventFollower {
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private deadlineTimer: NodeJS.Timeout | null = null;
   private drainTimer: NodeJS.Timeout | null = null;
+  private terminalDrainElapsed = false;
 
   constructor(private readonly args: MissionEventFollowerArgs) {
     this.res = args.res;
@@ -174,8 +175,9 @@ export class MissionEventFollower {
 
   private poll(): void {
     if (this.ended || this.backpressured) return;
+    let caughtUp: boolean;
     try {
-      this.drainFile();
+      caughtUp = this.drainFile();
       this.flushOutbox();
     } catch (err) {
       logger.warn('event follow poll failed', {
@@ -195,39 +197,34 @@ export class MissionEventFollower {
     }
     if (this.ended) return;
     if (state === null) { this.end('gone'); return; }
-    // Terminal states are immutable, so once observed the drain timer stays
-    // armed: it gives writes that landed just after the state flip (e.g.
-    // mission_completed emitted after the terminal transition) one final
-    // window to reach the log before the stream closes.
+    // The grace window allows trailing events after the terminal transition.
+    // Its expiry does not imply EOF: historical replay may need more bounded
+    // polls, and a slow peer must drain its queued events before terminal end.
     if (isTerminal(state) && !this.drainTimer) {
       this.drainTimer = setTimeout(() => {
-        this.pollDrainOnly();
-        this.end('terminal', state);
+        this.terminalDrainElapsed = true;
+        this.poll();
       }, this.limits.drainMs);
       this.drainTimer.unref();
     }
+    if (isTerminal(state) && this.terminalDrainElapsed && caughtUp &&
+        !this.backpressured && this.outbox.length === 0) {
+      this.end('terminal', state);
+    }
   }
 
-  /** Final file drain used when the terminal drain timer fires. */
-  private pollDrainOnly(): void {
-    try {
-      this.drainFile();
-      this.flushOutbox();
-    } catch { /* closing anyway — the end line still reports skippedLines */ }
-  }
-
-  /** Consume up to maxReadBytes of newly appended data since the last poll. */
-  private drainFile(): void {
+  /** Consume one bounded chunk; report whether it reached the sampled EOF. */
+  private drainFile(): boolean {
     let size: number;
     try {
       size = statSync(this.args.eventsPath).size;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return; // not created yet
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return true; // not created yet
       throw err;
     }
     if (size < this.offset) { this.offset = 0; this.tail = Buffer.alloc(0); } // recreated/truncated
     const wanted = Math.min(size - this.offset, this.limits.maxReadBytes);
-    if (wanted <= 0) return;
+    if (wanted <= 0) return true;
 
     const buf = Buffer.alloc(wanted);
     const fd = openSync(this.args.eventsPath, 'r');
@@ -262,6 +259,7 @@ export class MissionEventFollower {
       this.skippedLines++;
       this.tail = Buffer.alloc(0);
     }
+    return this.offset >= size;
   }
 
   private flushOutbox(): void {
